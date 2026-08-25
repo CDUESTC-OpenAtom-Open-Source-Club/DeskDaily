@@ -1,0 +1,60 @@
+name: Build DeskDaily
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    name: Build macOS app
+    runs-on: macos-14
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build app
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Package app
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent build/DeskDaily.app dist/DeskDaily-macOS-arm64.zip
+          shasum -a 256 dist/DeskDaily-macOS-arm64.zip > dist/SHA256SUMS.txt
+          hdiutil create \
+            -volname "DeskDaily" \
+            -srcfolder build/DeskDaily.app \
+            -ov -format UDZO \
+            dist/DeskDaily-macOS-arm64.dmg
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeskDaily-macOS-arm64
+          path: |
+            dist/DeskDaily-macOS-arm64.zip
+            dist/DeskDaily-macOS-arm64.dmg
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/DeskDaily-macOS-arm64.zip \
+            dist/DeskDaily-macOS-arm64.dmg \
+            dist/SHA256SUMS.txt \
+            --title "DeskDaily $GITHUB_REF_NAME" \
+            --generate-notes
