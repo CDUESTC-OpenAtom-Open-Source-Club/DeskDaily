@@ -8,6 +8,8 @@ extension Notification.Name {
     static let deskDailyOpenReview = Notification.Name("DeskDailyOpenReview")
     /// 菜单 ⌘N「新任务」→ 聚焦添加输入框
     static let deskDailyFocusAddField = Notification.Name("DeskDailyFocusAddField")
+    /// 时段冲突检测命中 → 卡片轻提示（userInfo["title"] = 冲突任务名）
+    static let deskDailyTimeConflict = Notification.Name("DeskDailyTimeConflict")
 }
 
 final class WidgetPanel: NSPanel {
@@ -19,6 +21,29 @@ final class WindowController: NSObject, NSWindowDelegate {
     private var panel: WidgetPanel?
     private var isAnimatingFit = false
     private var fitTargetHeight: CGFloat = 0
+
+    // MARK: 折叠（迷你胶囊）
+
+    /// 折叠态：内容切迷你胶囊、窗口固定小尺寸、fitHeight 跳过、闲置不淡化
+    private(set) var isCollapsed = false
+    static let miniSize = NSSize(width: 244, height: 56)
+    /// 折叠前的完整窗口 frame（展开时恢复宽度；折叠期间的持久化位置也基于它）
+    private var expandedFrame: NSRect? = nil
+    /// 最近一次内容自适应高度（展开时恢复高度用）
+    private var lastContentHeight: CGFloat = 0
+
+    // MARK: 边缘磁吸 / 形态动画
+
+    /// 磁吸或折叠/展开动画进行中：抑制重复回调与中途存档
+    private var isSnapping = false
+
+    // MARK: 闲置淡化
+
+    private var idleTimer: Timer? = nil
+    private var cardHovered = false
+    private var faded = false
+    private static let idleFadeSeconds: TimeInterval = 90
+    private static let fadedAlpha: CGFloat = 0.55
 
     func setup() {
         guard panel == nil else { return }
@@ -51,8 +76,19 @@ final class WindowController: NSObject, NSWindowDelegate {
         }
         p.contentView = NSHostingView(rootView: ContentView().environmentObject(store))
         p.delegate = self
+        if store.settings.collapsed {
+            // 上次退出时是迷你胶囊：重启直接保持折叠态（顶边不动收成小尺寸）
+            isCollapsed = true
+            expandedFrame = frame
+            lastContentHeight = frame.height
+            p.minSize = Self.miniSize
+            frame.origin.y = frame.maxY - Self.miniSize.height
+            frame.size = Self.miniSize
+            p.setFrame(frame, display: true)
+        }
         p.orderFrontRegardless()
         panel = p
+        scheduleIdleFade()
 
         NotificationCenter.default.addObserver(
             forName: .deskDailyWindowModeChanged, object: nil, queue: .main
@@ -64,6 +100,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     /// Dock 图标点击 / 重新打开应用时调用
     func showPanel() {
         guard let p = panel else { return }
+        unfade()  // 点 Dock 图标也是交互，立即恢复不透明
         p.orderFrontRegardless()
         if #available(macOS 14.0, *) {
             NSApp.activate()
@@ -88,6 +125,7 @@ final class WindowController: NSObject, NSWindowDelegate {
                 })
             }
         } else {
+            faded = false
             p.orderFrontRegardless()
             if DDMotion.reduceMotion {
                 p.alphaValue = 1
@@ -120,11 +158,62 @@ final class WindowController: NSObject, NSWindowDelegate {
         return CGRect(x: vis.maxX - w - 24, y: vis.maxY - h - 16, width: w, height: h)
     }
 
-    /// 按内容自适应窗口高度（顶边不动，封顶为屏幕高度的 82%；带平滑动画）
-    func fitHeight(to contentHeight: CGFloat) {
+    // MARK: - 折叠 / 展开（迷你胶囊）
+
+    /// 切换窗口形态：内容切换由 ContentView 负责，这里管窗口尺寸（顶边不动，带动画）
+    func setCollapsed(_ collapsed: Bool) {
+        guard let p = panel, collapsed != isCollapsed else { return }
+        isCollapsed = collapsed
+        unfade()  // 形态切换时恢复不透明
+        isSnapping = true  // 形态动画期间抑制磁吸与中途存档
+        if collapsed {
+            expandedFrame = p.frame
+            p.minSize = Self.miniSize
+            var f = p.frame
+            f.origin.y = f.maxY - Self.miniSize.height
+            f.size = Self.miniSize
+            animateSetFrame(f, duration: 0.32) { [weak self] in
+                self?.isSnapping = false
+                self?.saveFrame()
+            }
+        } else {
+            let restored = expandedFrame ?? p.frame
+            p.minSize = NSSize(width: 320, height: 260)
+            let vis = (p.screen ?? NSScreen.main)?.visibleFrame
+                ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
+            var h = lastContentHeight > 0 ? lastContentHeight : restored.height
+            h = min(max(h, 260), vis.height * 0.82)
+            var f = p.frame
+            f.size = NSSize(width: max(restored.width, 320), height: h)
+            f.origin.y = f.maxY - f.height
+            animateSetFrame(f, duration: 0.32) { [weak self] in
+                self?.isSnapping = false
+                self?.saveFrame()
+            }
+        }
+    }
+
+    /// 通用窗口 frame 动画（Reduce Motion 时直接落位）
+    private func animateSetFrame(_ f: NSRect, duration: TimeInterval, completion: (() -> Void)? = nil) {
         guard let p = panel else { return }
+        if DDMotion.reduceMotion {
+            p.setFrame(f, display: false)
+            completion?()
+            return
+        }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = duration
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            p.animator().setFrame(f, display: false)
+        }, completionHandler: completion)
+    }
+
+    /// 按内容自适应窗口高度（顶边不动，封顶为屏幕高度的 82%；带平滑动画）；折叠态跳过
+    func fitHeight(to contentHeight: CGFloat) {
+        guard !isCollapsed, let p = panel else { return }
         let vis = (p.screen ?? NSScreen.main)?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
         let newH = min(max(contentHeight, 280), vis.height * 0.82)
+        lastContentHeight = newH
         // 动画进行中且目标一致：忽略重复的高度回调，避免反复重启动画
         if isAnimatingFit, abs(fitTargetHeight - newH) <= 1 { return }
         fitTargetHeight = newH
@@ -158,14 +247,118 @@ final class WindowController: NSObject, NSWindowDelegate {
         p.orderFrontRegardless()
     }
 
+    // MARK: - 屏幕边缘磁吸
+
+    /// 拖动结束后距屏幕可见区域任一边缘 <24pt → 0.18s 吸附贴边（留 8pt 缝隙）
+    private func snapToScreenEdgeIfNeeded() {
+        guard let p = panel, !isAnimatingFit, !isSnapping else { return }
+        guard let screen = p.screen ?? NSScreen.main else { return }
+        let vis = screen.visibleFrame
+        let f = p.frame
+        let threshold: CGFloat = 24
+        let margin: CGFloat = 8
+        var target = f
+        var snapped = false
+        if abs(f.minX - vis.minX) < threshold { target.origin.x = vis.minX + margin; snapped = true }
+        if abs(vis.maxX - f.maxX) < threshold { target.origin.x = vis.maxX - margin - f.width; snapped = true }
+        if abs(vis.maxY - f.maxY) < threshold { target.origin.y = vis.maxY - margin - f.height; snapped = true }
+        if abs(f.minY - vis.minY) < threshold { target.origin.y = vis.minY + margin; snapped = true }
+        guard snapped, target != f else { return }
+        isSnapping = true
+        if DDMotion.reduceMotion {
+            p.setFrame(target, display: false)
+            isSnapping = false
+            saveFrame()
+            return
+        }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.18
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            p.animator().setFrame(target, display: false)
+        }, completionHandler: { [weak self] in
+            guard let self = self else { return }
+            self.isSnapping = false
+            self.saveFrame()
+        })
+    }
+
+    // MARK: - 闲置自动淡化
+
+    /// ContentView 整卡 onHover 回调：悬停立即恢复不透明并重置闲置计时
+    func noteCardHover(_ inside: Bool) {
+        cardHovered = inside
+        if inside { unfade() }
+        scheduleIdleFade()
+    }
+
+    /// 设置里开/关「闲置时自动淡化」
+    func idleFadeSettingChanged(_ on: Bool) {
+        if on {
+            scheduleIdleFade()
+        } else {
+            idleTimer?.invalidate()
+            idleTimer = nil
+            unfade()
+        }
+    }
+
+    private func scheduleIdleFade() {
+        idleTimer?.invalidate()
+        let timer = Timer(timeInterval: Self.idleFadeSeconds, target: self,
+                          selector: #selector(idleFadeFired), userInfo: nil, repeats: false)
+        RunLoop.main.add(timer, forMode: .common)
+        idleTimer = timer
+    }
+
+    @objc private func idleFadeFired() {
+        idleTimer = nil
+        guard let p = panel, p.isVisible, !cardHovered, !isCollapsed, !faded,
+              Store.shared.settings.idleFade else { return }
+        faded = true
+        if DDMotion.reduceMotion {
+            p.alphaValue = Self.fadedAlpha
+            return
+        }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.45
+            p.animator().alphaValue = Self.fadedAlpha
+        })
+    }
+
+    /// 恢复不透明（悬停 / 形态切换 / 点 Dock 图标 / 关闭设置时调用）
+    func unfade() {
+        guard faded, let p = panel else { return }
+        faded = false
+        if DDMotion.reduceMotion {
+            p.alphaValue = 1
+            return
+        }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.25
+            p.animator().alphaValue = 1
+        })
+    }
+
     // MARK: - NSWindowDelegate
 
-    // 高度自适应动画期间不逐帧保存 frame，动画结束时统一保存
-    func windowDidMove(_ notification: Notification) { if !isAnimatingFit { saveFrame() } }
-    func windowDidResize(_ notification: Notification) { if !isAnimatingFit { saveFrame() } }
+    // 高度自适应 / 磁吸 / 形态动画期间不逐帧保存 frame，动画结束时统一保存
+    func windowDidMove(_ notification: Notification) {
+        if !isAnimatingFit && !isSnapping { saveFrame() }
+        snapToScreenEdgeIfNeeded()
+    }
+    func windowDidResize(_ notification: Notification) {
+        if !isAnimatingFit && !isSnapping { saveFrame() }
+    }
 
     private func saveFrame() {
         guard let p = panel else { return }
-        Store.shared.settings.windowFrame = p.frame
+        if isCollapsed, let exp = expandedFrame {
+            // 折叠期间保存“展开后应恢复”的 frame：尺寸取折叠前，位置取当前顶边
+            var f = exp
+            f.origin.y = p.frame.maxY - f.height
+            Store.shared.settings.windowFrame = f
+        } else if !isCollapsed {
+            Store.shared.settings.windowFrame = p.frame
+        }
     }
 }

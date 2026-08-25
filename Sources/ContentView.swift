@@ -162,6 +162,25 @@ struct CardBackground: NSViewRepresentable {
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }
 
+/// 迷你胶囊里的小进度环（无文字，跟随完成度）
+struct MiniRingView: View {
+    let progress: CGFloat
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(Color.secondary.opacity(0.25), lineWidth: 2.5)
+            Circle()
+                .trim(from: 0, to: progress)
+                .stroke(
+                    AngularGradient(colors: [Accent.start, Accent.end], center: .center),
+                    style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
+                )
+                .rotationEffect(.degrees(-90))
+        }
+        .frame(width: 20, height: 20)
+    }
+}
+
 /// 各区块把自己的高度累加进来，窗口据此自适应高度
 struct HeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
@@ -210,35 +229,29 @@ struct ContentView: View {
     @FocusState private var addFieldFocused: Bool
 
     var body: some View {
-        VStack(spacing: 0) {
-            headerSection
-                .background(GeometryReader { g in
-                    Color.clear.preference(key: HeightKey.self, value: g.size.height)
-                })
-            sheetBar
-                .background(GeometryReader { g in
-                    Color.clear.preference(key: HeightKey.self, value: g.size.height)
-                })
-            focusBarSection
-            taskList
-            addBarSection
-                .background(GeometryReader { g in
-                    Color.clear.preference(key: HeightKey.self, value: g.size.height)
-                })
+        ZStack {
+            if store.settings.collapsed {
+                miniCapsule
+                    .transition(.scale(scale: 0.92).combined(with: .opacity))
+            } else {
+                expandedCard
+                    .transition(.opacity)
+            }
         }
-        .frame(minWidth: 320, maxWidth: .infinity, minHeight: 260, maxHeight: .infinity, alignment: .top)
+        .animation(ddAnimation, value: store.settings.collapsed)
         .background(
             ZStack {
                 CardBackground()
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous)
                     .fill(Color.primary.opacity(0.04))
             }
         )
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(Accent.start.opacity(0.15), lineWidth: 1)
+            RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous)
+                .strokeBorder(Accent.start.opacity(store.settings.collapsed ? 0.45 : 0.15), lineWidth: 1)
         )
+        .onHover { WindowController.shared.noteCardHover($0) }
         .onPreferenceChange(HeightKey.self) { h in
             WindowController.shared.fitHeight(to: h)
         }
@@ -295,6 +308,12 @@ struct ContentView: View {
             // 菜单「新任务 ⌘N」→ 聚焦添加输入框
             addFieldFocused = true
         }
+        .onReceive(NotificationCenter.default.publisher(for: .deskDailyTimeConflict)) { note in
+            // 时段冲突检测命中 → 轻提示（相关任务的时间胶囊同时在黄色闪烁）
+            if let title = note.userInfo?["title"] as? String {
+                showInfoToast("⚠️ 与「\(title)」时间重叠")
+            }
+        }
         .popover(isPresented: $settingsOpen, arrowEdge: .bottom) {
             SettingsView()
         }
@@ -303,6 +322,102 @@ struct ContentView: View {
             Button("删除", role: .destructive) { withDDAnimation { store.deleteActiveSheet() } }
             Button("取消", role: .cancel) {}
         }
+    }
+
+    /// 折叠态窗口的圆角（56 高窗口取 28 即胶囊形）
+    private var cardCornerRadius: CGFloat { store.settings.collapsed ? 28 : 22 }
+
+    /// 完整卡片内容（未折叠时的主体）
+    private var expandedCard: some View {
+        VStack(spacing: 0) {
+            headerSection
+                .background(GeometryReader { g in
+                    Color.clear.preference(key: HeightKey.self, value: g.size.height)
+                })
+            sheetBar
+                .background(GeometryReader { g in
+                    Color.clear.preference(key: HeightKey.self, value: g.size.height)
+                })
+            focusBarSection
+            taskList
+            addBarSection
+                .background(GeometryReader { g in
+                    Color.clear.preference(key: HeightKey.self, value: g.size.height)
+                })
+        }
+        .frame(minWidth: 320, maxWidth: .infinity, minHeight: 260, maxHeight: .infinity, alignment: .top)
+    }
+
+    // MARK: - 迷你折叠胶囊（双击标题区折叠 / 双击胶囊展开）
+
+    /// 双击切换折叠：窗口尺寸动画（顶边不动）+ 内容 crossfade；状态写入设置（重启保持）
+    private func toggleCollapsed() {
+        let to = !store.settings.collapsed
+        WindowController.shared.setCollapsed(to)
+        withDDAnimation { store.settings.collapsed = to }
+    }
+
+    private var miniProgress: CGFloat {
+        let total = store.visibleTasks.count
+        guard total > 0 else { return 0 }
+        return CGFloat(store.doneCount) / CGFloat(total)
+    }
+
+    /// 下一件事摘要：最近的未完成定时任务（已全过点则取最早一个），无任务显示“今日空闲”
+    private var miniNextLine: String {
+        let undone = store.visibleTasks.filter { !store.isDone($0) }
+        guard !undone.isEmpty else { return "今日空闲" }
+        let timed = undone.filter { $0.remindAt != nil }.sorted { ($0.remindAt ?? 0) < ($1.remindAt ?? 0) }
+        let next = timed.first { ($0.remindAt ?? 0) >= store.nowMinutes } ?? timed.first ?? undone[0]
+        let title = next.title.count > 8 ? String(next.title.prefix(8)) + "…" : next.title
+        if let m = next.remindAt { return "\(store.timeString(m)) \(title)" }
+        return title
+    }
+
+    private var miniCapsule: some View {
+        HStack(spacing: 7) {
+            MiniRingView(progress: miniProgress)
+            Text("\(store.doneCount)/\(store.visibleTasks.count)")
+                .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .foregroundColor(.primary)
+            Circle()
+                .fill(Accent.start.opacity(0.45))
+                .frame(width: 3, height: 3)
+            if let session = store.focusSession {
+                // 专注进行中：摘要位置显示番茄钟倒计时（每秒刷新）
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    let remaining = session.pausedRemaining
+                        ?? max(Int(session.endsAt.timeIntervalSince(Store.now())), 0)
+                    Text("⏱ \(FocusBarView.mmss(remaining))")
+                        .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                        .monospacedDigit()
+                        .foregroundColor(Accent.start)
+                }
+            } else {
+                Text(miniNextLine)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 40)
+        .frame(maxWidth: .infinity)
+        .background(
+            ZStack {
+                Capsule().fill(.ultraThinMaterial)
+                Capsule().fill(Accent.start.opacity(0.06))
+            }
+        )
+        .overlay(Capsule().strokeBorder(Accent.start.opacity(0.4), lineWidth: 1))
+        .clipShape(Capsule())
+        .contentShape(Capsule())
+        .padding(8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onTapGesture(count: 2) { toggleCollapsed() }
+        .help("双击展开 · \(store.activeSheetName)（可直接拖动）")
     }
 
     // MARK: - 计划表切换栏
@@ -536,6 +651,10 @@ struct ContentView: View {
         .padding(.horizontal, 18)
         .padding(.top, 16)
         .padding(.bottom, 10)
+        // 双击标题空白处：折叠为迷你胶囊 / 展开（折叠态记忆，重启保持）
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) { toggleCollapsed() }
+        .help("双击折叠为迷你胶囊")
     }
 
     private func progressRing(done: Int, total: Int) -> some View {
@@ -602,19 +721,22 @@ struct ContentView: View {
         currentTasks.filter { store.isDone($0, offset: viewOffset) }
     }
 
-    /// 未完成且带提醒时间的任务数（visibleTasks 已按时间升序，定时任务排在最前）
-    private var timedUndoneCount: Int {
-        undoneTasks.prefix { $0.remindAt != nil }.count
+    /// 是否有定时未完成任务（“现在”线仅今天视角显示）
+    private var showNowLine: Bool {
+        viewOffset == 0 && undoneTasks.contains { $0.remindAt != nil }
     }
 
-    /// “现在”线只插在“有时间且未完成”的任务序列中（仅今天视角）
-    private var showNowLine: Bool { viewOffset == 0 && timedUndoneCount > 0 }
-
-    /// “现在”线在未完成序列里应插入的位置（当前时刻落在哪个任务之前）
+    /// “现在”线插到第一个“提醒时间晚于现在”的定时任务之前
+    /// （星标置顶只影响排列，无时间任务不参与插线判断）
     private var nowLineIndex: Int {
-        undoneTasks.prefix(timedUndoneCount)
-            .filter { ($0.remindAt ?? 0) <= store.nowMinutes }
-            .count
+        let undone = undoneTasks
+        var index = 0
+        for (i, task) in undone.enumerated() {
+            guard let m = task.remindAt else { continue }
+            if m > store.nowMinutes { return i }
+            index = i + 1
+        }
+        return index
     }
 
     private var taskList: some View {
@@ -882,6 +1004,8 @@ struct ContentView: View {
             title = parse.title
         }
         let scheduledForTomorrow = newRule.kind == .once && newRule.date == store.tomorrowKey()
+        // 时段冲突检测（在入列前比对既有任务；仅提示 + 黄色闪烁，不阻塞创建）
+        store.detectTimeConflicts(excluding: nil, remindAt: newRemindMinutes, duration: newDuration)
         withDDAnimation {
             store.addTask(title: title, rule: newRule, remindAt: newRemindMinutes, duration: newDuration)
         }
@@ -1176,6 +1300,14 @@ struct TaskRow: View {
 
             Spacer(minLength: 0)
 
+            if task.starred && !isEditing {
+                // 优先级星标：行右缘小星（右键可切换）
+                Image(systemName: "star.fill")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(.yellow)
+                    .help("重要任务（右键「取消星标」可移除）")
+                    .transition(.scale(scale: 0.5).combined(with: .opacity))
+            }
             if task.remindAt != nil, !isEditing {
                 timeChip
             }
@@ -1216,6 +1348,8 @@ struct TaskRow: View {
             TimePickerPopover(initialMinutes: task.remindAt ?? store.nowMinutes,
                               initialDuration: task.durationMinutes ?? 0) { picked, duration in
                 store.setRemind(task.id, minutes: picked, duration: duration)
+                // 修改时间后即时做时段冲突检测（仅提示，不阻塞）
+                store.detectTimeConflicts(excluding: task.id, remindAt: picked, duration: duration)
                 showTimePicker = false
             }
         }
@@ -1262,6 +1396,15 @@ struct TaskRow: View {
         .onTapGesture(count: 2) { startEditing() }
     }
 
+    /// 该任务正处于冲突闪烁（Store 检测到时段重叠后持续 2 秒）
+    private var timeConflictFlashing: Bool { store.timeConflictIDs.contains(task.id) }
+
+    private var timeChipFill: Color {
+        if timeConflictFlashing { return Color.yellow.opacity(0.5) }
+        if inPeriod { return Color.green.opacity(0.16) }
+        return isOverdue ? Color.red.opacity(0.14) : Color.secondary.opacity(0.13)
+    }
+
     private var timeChip: some View {
         HStack(spacing: 3) {
             Image(systemName: inPeriod ? "clock.badge.checkmark" : (isOverdue ? "clock.badge.exclamationmark" : "clock"))
@@ -1272,9 +1415,13 @@ struct TaskRow: View {
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
         .background(
-            Capsule().fill(inPeriod ? Color.green.opacity(0.16)
-                           : (isOverdue ? Color.red.opacity(0.14) : Color.secondary.opacity(0.13)))
+            Capsule().fill(timeChipFill)
         )
+        // 冲突期间黄色闪烁（autoreverse 循环），2 秒后恢复常规配色
+        .animation(timeConflictFlashing
+                   ? Animation.easeInOut(duration: 0.28).repeatForever(autoreverses: true)
+                   : .easeInOut(duration: 0.2),
+                   value: timeConflictFlashing)
         .foregroundColor(inPeriod ? .green : (isOverdue ? .red : .secondary))
         .hoverPointing()
         .onTapGesture { activateApp(); showTimePicker = true }
@@ -1285,6 +1432,12 @@ struct TaskRow: View {
 
     @ViewBuilder
     private var contextMenuItems: some View {
+        Button {
+            withDDAnimation { store.toggleStar(task.id) }
+        } label: {
+            Label(task.starred ? "取消星标" : "★ 标记重要", systemImage: task.starred ? "star.slash" : "star")
+        }
+        .help("星标任务置顶显示（先于时间排序）")
         if !tomorrowMode {
             Button {
                 withDDAnimation { store.startFocus(task.id) }
@@ -1420,7 +1573,8 @@ struct FocusBarView: View {
         )
     }
 
-    private static func mmss(_ seconds: Int) -> String {
+    /// mm:ss 倒计时文案（迷你胶囊也复用）
+    static func mmss(_ seconds: Int) -> String {
         String(format: "%02d:%02d", seconds / 60, seconds % 60)
     }
 }
@@ -1832,6 +1986,19 @@ struct SettingsView: View {
                         .font(.system(size: 9.5))
                         .foregroundColor(.secondary)
                     Divider().opacity(0.5)
+                    Toggle(isOn: $store.settings.idleFade) {
+                        Label("闲置时自动淡化", systemImage: "circle.lefthalf.filled")
+                    }
+                    Text("90 秒无悬停 / 操作时卡片自动半透明，鼠标一碰立即恢复；迷你胶囊不受影响。")
+                        .font(.system(size: 9.5))
+                        .foregroundColor(.secondary)
+                    Toggle(isOn: $store.settings.dockBadge) {
+                        Label("Dock 图标显示未完成数", systemImage: "dock.rectangle")
+                    }
+                    Text("今日还有未完成任务时，Dock 图标角标实时显示数量，全部完成自动清空。")
+                        .font(.system(size: 9.5))
+                        .foregroundColor(.secondary)
+                    Divider().opacity(0.5)
                     Toggle(isOn: $loginEnabled) {
                         Label("登录时自动启动", systemImage: "power")
                     }
@@ -1873,7 +2040,7 @@ struct SettingsView: View {
                 Label("通用", systemImage: "gearshape")
             }
 
-            Text("DeskDaily v1.6 · 数据保存在本机\n~/Library/Application Support/DeskDaily/")
+            Text("DeskDaily v1.7 · 数据保存在本机\n~/Library/Application Support/DeskDaily/")
                 .font(.system(size: 9.5))
                 .foregroundColor(.secondary)
                 .frame(maxWidth: .infinity, alignment: .center)
@@ -1891,6 +2058,9 @@ struct SettingsView: View {
         }
         .onChange(of: store.settings.statusBarIcon) { on in
             StatusBarManager.shared.setEnabled(on)
+        }
+        .onChange(of: store.settings.idleFade) { on in
+            WindowController.shared.idleFadeSettingChanged(on)
         }
         .confirmationDialog("确定要清空「\(store.activeSheetName)」的全部任务吗？此操作不可恢复。",
                             isPresented: $confirmClearAll, titleVisibility: .visible) {

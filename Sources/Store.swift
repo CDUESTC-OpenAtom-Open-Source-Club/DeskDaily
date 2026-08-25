@@ -94,6 +94,12 @@ struct AppSettings: Codable, Equatable {
     var globalHotkey: Bool = true
     // 菜单栏迷你入口（默认关，避免打扰）
     var statusBarIcon: Bool = false
+    // 批次④：迷你胶囊折叠态（重启保持）
+    var collapsed: Bool = false
+    // 闲置自动淡化（完整卡片 90 秒无操作 → 半透明）
+    var idleFade: Bool = true
+    // Dock 图标显示今日未完成数徽标
+    var dockBadge: Bool = true
 
     init() {}
 
@@ -114,6 +120,9 @@ struct AppSettings: Codable, Equatable {
         reviewTime = try c.decodeIfPresent(Int.self, forKey: .reviewTime)
         globalHotkey = try c.decodeIfPresent(Bool.self, forKey: .globalHotkey) ?? true
         statusBarIcon = try c.decodeIfPresent(Bool.self, forKey: .statusBarIcon) ?? false
+        collapsed = try c.decodeIfPresent(Bool.self, forKey: .collapsed) ?? false
+        idleFade = try c.decodeIfPresent(Bool.self, forKey: .idleFade) ?? true
+        dockBadge = try c.decodeIfPresent(Bool.self, forKey: .dockBadge) ?? true
     }
 }
 
@@ -127,10 +136,12 @@ struct TaskItem: Codable, Identifiable, Equatable {
     var doneDays: Set<String> = []         // 每天的完成状态，跨天自动重置
     var remindedDays: Set<String> = []     // 已提醒过“开始”的日期
     var endRemindedDays: Set<String> = []  // 已提醒过“结束”的日期
+    var starred: Bool = false              // 优先级星标（置顶显示）
 
     init(id: UUID = UUID(), title: String, remindAt: Int? = nil, durationMinutes: Int? = nil,
          repeatRule: RepeatRule = RepeatRule(), createdOn: String = "",
-         doneDays: Set<String> = [], remindedDays: Set<String> = [], endRemindedDays: Set<String> = []) {
+         doneDays: Set<String> = [], remindedDays: Set<String> = [], endRemindedDays: Set<String> = [],
+         starred: Bool = false) {
         self.id = id
         self.title = title
         self.remindAt = remindAt
@@ -140,6 +151,7 @@ struct TaskItem: Codable, Identifiable, Equatable {
         self.doneDays = doneDays
         self.remindedDays = remindedDays
         self.endRemindedDays = endRemindedDays
+        self.starred = starred
     }
 
     private enum LegacyKeys: String, CodingKey { case repeatDaily }
@@ -163,6 +175,7 @@ struct TaskItem: Codable, Identifiable, Equatable {
         remindedDays = try c.decodeIfPresent(Set<String>.self, forKey: .remindedDays) ?? []
         durationMinutes = try c.decodeIfPresent(Int.self, forKey: .durationMinutes)
         endRemindedDays = try c.decodeIfPresent(Set<String>.self, forKey: .endRemindedDays) ?? []
+        starred = try c.decodeIfPresent(Bool.self, forKey: .starred) ?? false
     }
 }
 
@@ -353,9 +366,9 @@ struct FocusSession: Equatable {
 final class Store: ObservableObject {
     static let shared = Store()
 
-    @Published var settings: AppSettings { didSet { if settings != oldValue { persist() } } }
-    @Published var sheets: [PlanSheet] { didSet { persist() } }
-    @Published var activeSheetId: UUID? { didSet { persist() } }
+    @Published var settings: AppSettings { didSet { if settings != oldValue { persist(); refreshDockBadge() } } }
+    @Published var sheets: [PlanSheet] { didSet { persist(); refreshDockBadge() } }
+    @Published var activeSheetId: UUID? { didSet { persist(); refreshDockBadge() } }
     @Published var memories: [MemoryEntry] { didSet { persist() } }
     @Published var chatHistory: [ChatMessage] { didSet { persist() } }
     @Published var templates: [PlanSheet] { didSet { persist() } }
@@ -407,6 +420,7 @@ final class Store: ObservableObject {
         refreshNow()
         persist()
         writeStartupBackup()
+        refreshDockBadge()
         timerCancellable = Timer.publish(every: 15, on: .main, in: .common).autoconnect()
             .sink { [weak self] _ in self?.onTimer() }
     }
@@ -549,6 +563,7 @@ final class Store: ObservableObject {
                 Notify.post(title: "🌅 新的一天", body: "「\(activeSheetName)」清单已刷新，今天共有 \(visibleTasks.count) 项任务")
             }
             persist()
+            refreshDockBadge()
         }
         checkReminders()
         checkReviewReminder()
@@ -566,6 +581,7 @@ final class Store: ObservableObject {
         return sheets[i].tasks
             .filter { $0.repeatRule.isActive(on: currentDay, weekday: weekday) }
             .sorted { a, b in
+                if a.starred != b.starred { return a.starred }   // 星标置顶（先于时间规则）
                 let am = a.remindAt ?? Int.max
                 let bm = b.remindAt ?? Int.max
                 if am != bm { return am < bm }
@@ -581,6 +597,7 @@ final class Store: ObservableObject {
         return sheets[i].tasks
             .filter { $0.repeatRule.isActive(on: key, weekday: weekday) }
             .sorted { a, b in
+                if a.starred != b.starred { return a.starred }   // 星标置顶（先于时间规则）
                 let am = a.remindAt ?? Int.max
                 let bm = b.remindAt ?? Int.max
                 if am != bm { return am < bm }
@@ -767,6 +784,62 @@ final class Store: ObservableObject {
                 list[i].doneDays.insert(currentDay)
             }
         }
+    }
+
+    // MARK: 优先级星标（批次④）
+
+    func toggleStar(_ id: UUID) {
+        mutateActiveTasks { list in
+            guard let i = list.firstIndex(where: { $0.id == id }) else { return }
+            list[i].starred.toggle()
+        }
+    }
+
+    // MARK: 时段冲突检测（批次④：仅提示，不阻塞创建）
+
+    /// 正在冲突闪烁的任务（内存态 UI，不持久化；2 秒后自动清空）
+    @Published var timeConflictIDs: Set<UUID> = []
+    private var conflictClearToken = 0
+
+    /// 候选时段与当前表今日活跃任务的重叠检测（无时长按占用 30 分钟计）：
+    /// 命中 → 发 deskDailyTimeConflict 通知（卡片 toast）+ 相关任务时间胶囊黄色闪烁 2 秒
+    func detectTimeConflicts(excluding excludedID: UUID?, remindAt: Int?, duration: Int?) {
+        guard let start = remindAt, let i = activeIndex else { return }
+        let end = start + ((duration ?? 0) > 0 ? duration! : 30)
+        let weekday = weekdayNow()
+        var ids = Set<UUID>()
+        var firstTitle: String? = nil
+        for other in sheets[i].tasks {
+            guard other.id != excludedID,
+                  let otherStart = other.remindAt,
+                  other.repeatRule.isActive(on: currentDay, weekday: weekday) else { continue }
+            let otherEnd = otherStart + ((other.durationMinutes ?? 0) > 0 ? other.durationMinutes! : 30)
+            if start < otherEnd && otherStart < end {
+                ids.insert(other.id)
+                if firstTitle == nil { firstTitle = other.title }
+            }
+        }
+        guard let title = firstTitle else { return }
+        conflictClearToken += 1
+        let token = conflictClearToken
+        timeConflictIDs = ids
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            guard self.conflictClearToken == token else { return }
+            self.timeConflictIDs = []
+        }
+        NotificationCenter.default.post(name: .deskDailyTimeConflict, object: nil, userInfo: ["title": title])
+    }
+
+    // MARK: Dock 徽标（批次④）
+
+    /// 今日未完成数 > 0 且设置开启时，Dock 图标挂数字角标；否则清空
+    func refreshDockBadge() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { self.refreshDockBadge() }
+            return
+        }
+        let undone = visibleTasks.filter { !isDone($0) }.count
+        NSApp.dockTile.badgeLabel = (settings.dockBadge && undone > 0) ? "\(min(undone, 99))" : nil
     }
 
     func resetToday() {
