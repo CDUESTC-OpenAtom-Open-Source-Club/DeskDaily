@@ -1818,7 +1818,7 @@ struct SettingsView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .padding(.bottom, 12)
-            ScrollView(.vertical, showsIndicators: true) {
+            ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 10) {
                     switch tab {
                     case .general:
@@ -2082,7 +2082,7 @@ struct SettingsView: View {
                     Text("已记住 \(store.memories.count) 条（规划时自动参考）")
                         .font(.system(size: 10.5))
                         .foregroundColor(.secondary)
-                    ScrollView(showsIndicators: true) {
+                    ScrollView(showsIndicators: false) {
                         VStack(alignment: .leading, spacing: 5) {
                             ForEach(store.memories) { memory in
                                 HStack(spacing: 6) {
