@@ -1,5 +1,6 @@
 import SwiftUI
 import ServiceManagement
+import UniformTypeIdentifiers
 
 extension Color {
     init(hex: String) {
@@ -66,6 +67,90 @@ func activateApp() {
     }
 }
 
+// MARK: - 动效辅助（全局统一；系统开启"减弱动态效果"时自动降级为短 crossfade）
+
+enum DDMotion {
+    /// 系统辅助功能：减弱动态效果（等价于 SwiftUI 的 accessibilityReduceMotion）
+    static var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+
+    /// 统一 spring 动画（Reduce Motion 时为 0.18s 渐变 crossfade）
+    static var animation: Animation {
+        reduceMotion ? .easeInOut(duration: 0.18) : .spring(response: 0.42, dampingFraction: 0.82)
+    }
+
+    /// 任务行增删动效：插入自底部滑入+淡入，删除向右滑出
+    static var taskRowTransition: AnyTransition {
+        if reduceMotion { return .opacity }
+        return .asymmetric(
+            insertion: .move(edge: .bottom).combined(with: .opacity),
+            removal: .move(edge: .trailing).combined(with: .opacity)
+        )
+    }
+}
+
+/// 全局统一动效（读取辅助功能设置，全局统一使用）
+var ddAnimation: Animation { DDMotion.animation }
+
+/// 所有会引发列表/布局变化的状态修改统一走这里
+func withDDAnimation<Result>(_ body: () throws -> Result) rethrows -> Result {
+    try withAnimation(DDMotion.animation, body)
+}
+
+// MARK: - 悬停光标辅助（可点击元素显示手形光标，可选微放大）
+
+struct HoverPointerModifier: ViewModifier {
+    var magnify: Bool = false
+    @State private var hovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(magnify && hovering ? 1.05 : 1)
+            .animation(DDMotion.reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.6), value: hovering)
+            .onHover { inside in
+                hovering = inside
+                if inside {
+                    NSCursor.pointingHand.set()
+                } else {
+                    NSCursor.arrow.set()
+                }
+            }
+    }
+}
+
+extension View {
+    /// 可点击元素悬停显示手形光标；magnify 为 true 时悬停微放大 1.05
+    func hoverPointing(magnify: Bool = false) -> some View {
+        modifier(HoverPointerModifier(magnify: magnify))
+    }
+}
+
+// MARK: - “现在”指示线（主题色渐变横线 + 圆点 + HH:mm 标签）
+
+struct NowLineView: View {
+    let label: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(Accent.start)
+                .frame(width: 5, height: 5)
+            Text(label)
+                .font(.system(size: 9, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .foregroundColor(Accent.start)
+            RoundedRectangle(cornerRadius: 1)
+                .fill(
+                    LinearGradient(colors: [Accent.start.opacity(0.85), Accent.end.opacity(0.08)],
+                                   startPoint: .leading, endPoint: .trailing)
+                )
+                .frame(height: 1.5)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 3)
+        .accessibilityLabel("现在 \(label)")
+    }
+}
+
 struct CardBackground: NSViewRepresentable {
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
@@ -96,6 +181,9 @@ struct ContentView: View {
     @State private var showSheetEditor = false
     @State private var sheetEditorIsNew = true
     @State private var confirmDeleteSheet = false
+    @State private var doneExpanded = false
+    @State private var showUndoToast = false
+    @State private var undoToastToken = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -124,17 +212,37 @@ struct ContentView: View {
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+                .strokeBorder(Accent.start.opacity(0.15), lineWidth: 1)
         )
         .onPreferenceChange(HeightKey.self) { h in
             WindowController.shared.fitHeight(to: h)
+        }
+        .overlay(alignment: .bottom) {
+            if showUndoToast, let deleted = store.lastDeleted {
+                undoToastView(title: deleted.task.title)
+                    .padding(.bottom, 72)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .onChange(of: store.lastDeleted) { info in
+            if info != nil {
+                undoToastToken += 1
+                withDDAnimation { showUndoToast = true }
+                let token = undoToastToken
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    guard undoToastToken == token else { return }
+                    withDDAnimation { showUndoToast = false }
+                }
+            } else {
+                withDDAnimation { showUndoToast = false }
+            }
         }
         .popover(isPresented: $settingsOpen, arrowEdge: .bottom) {
             SettingsView()
         }
         .confirmationDialog("确定删除计划表「\(store.activeSheetName)」及其所有任务吗？",
                             isPresented: $confirmDeleteSheet, titleVisibility: .visible) {
-            Button("删除", role: .destructive) { store.deleteActiveSheet() }
+            Button("删除", role: .destructive) { withDDAnimation { store.deleteActiveSheet() } }
             Button("取消", role: .cancel) {}
         }
     }
@@ -146,7 +254,7 @@ struct ContentView: View {
             Menu {
                 ForEach(store.sheets) { sheet in
                     Button {
-                        store.activeSheetId = sheet.id
+                        withDDAnimation { store.activeSheetId = sheet.id }
                     } label: {
                         HStack {
                             Image(systemName: "circle.fill")
@@ -213,6 +321,9 @@ struct ContentView: View {
                     .kerning(2)
                 Text(header.date)
                     .font(.system(size: 24, weight: .bold, design: .rounded))
+                Text(store.dayPeriod().greeting)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.secondary)
                 HStack(spacing: 4) {
                     Image(systemName: "clock").font(.system(size: 9, weight: .semibold))
                     Text("\(store.clockString()) · \(store.tzLabel())")
@@ -233,6 +344,7 @@ struct ContentView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .hoverPointing()
             .help("AI 日程规划")
             .popover(isPresented: $aiOpen, arrowEdge: .bottom) {
                 ChatView()
@@ -280,6 +392,7 @@ struct ContentView: View {
         }
         .frame(width: 42, height: 42)
         .contentShape(Rectangle())
+        .hoverPointing(magnify: true)
         .onTapGesture {
             withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
                 store.settings.progressMode = showPercent ? .count : .percent
@@ -290,26 +403,101 @@ struct ContentView: View {
               : "暂无任务")
     }
 
-    // MARK: - 任务列表
+    // MARK: - 任务列表（未完成在上；“现在”线插在定时未完成序列中；已完成折叠在底部）
+
+    private var undoneTasks: [TaskItem] {
+        store.visibleTasks.filter { !store.isDone($0) }
+    }
+
+    private var doneTasks: [TaskItem] {
+        store.visibleTasks.filter { store.isDone($0) }
+    }
+
+    /// 未完成且带提醒时间的任务数（visibleTasks 已按时间升序，定时任务排在最前）
+    private var timedUndoneCount: Int {
+        undoneTasks.prefix { $0.remindAt != nil }.count
+    }
+
+    /// “现在”线只插在“有时间且未完成”的任务序列中
+    private var showNowLine: Bool { timedUndoneCount > 0 }
+
+    /// “现在”线在未完成序列里应插入的位置（当前时刻落在哪个任务之前）
+    private var nowLineIndex: Int {
+        undoneTasks.prefix(timedUndoneCount)
+            .filter { ($0.remindAt ?? 0) <= store.nowMinutes }
+            .count
+    }
 
     private var taskList: some View {
-        ScrollView(.vertical, showsIndicators: false) {
+        let undone = undoneTasks
+        let done = doneTasks
+        let lineIndex = nowLineIndex
+        let showLine = showNowLine
+        return ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 2) {
                 if store.visibleTasks.isEmpty {
                     EmptyStateView()
                 }
-                ForEach(store.visibleTasks) { task in
-                    TaskRow(task: task, done: store.isDone(task), nowMinutes: store.nowMinutes)
+                ForEach(Array(undone.enumerated()), id: \.element.id) { idx, task in
+                    if showLine && idx == lineIndex {
+                        nowLine
+                    }
+                    taskRow(task)
+                }
+                if showLine && lineIndex >= undone.count {
+                    nowLine
+                }
+                if !done.isEmpty {
+                    doneHeader(doneCount: done.count, total: store.visibleTasks.count)
+                    if doneExpanded {
+                        ForEach(done) { task in
+                            taskRow(task)
+                        }
+                    }
                 }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
+            .animation(ddAnimation, value: lineIndex)
             .background(
                 GeometryReader { g in
                     Color.clear.preference(key: HeightKey.self, value: g.size.height)
                 }
             )
         }
+    }
+
+    private var nowLine: some View {
+        NowLineView(label: store.clockString())
+            .transition(.opacity)
+    }
+
+    private func taskRow(_ task: TaskItem) -> some View {
+        TaskRow(task: task, done: store.isDone(task), nowMinutes: store.nowMinutes)
+            .transition(DDMotion.taskRowTransition)
+    }
+
+    /// 已完成分组头：已完成 N/M，chevron 可展开/收起（默认收起）
+    private func doneHeader(doneCount: Int, total: Int) -> some View {
+        Button {
+            withDDAnimation { doneExpanded.toggle() }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .bold))
+                    .rotationEffect(.degrees(doneExpanded ? 90 : 0))
+                Text("已完成 \(doneCount)/\(total)")
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 10.5, weight: .semibold))
+            .foregroundColor(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .hoverPointing()
+        .padding(.top, 4)
     }
 
     // MARK: - 底部添加栏
@@ -325,7 +513,7 @@ struct ContentView: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
                 .onSubmit(addCurrent)
-            if let minutes = newRemindMinutes {
+            if newRemindMinutes != nil {
                 Button {
                     newRemindMinutes = nil
                     newDuration = nil
@@ -338,6 +526,7 @@ struct ContentView: View {
                         .foregroundColor(Accent.start)
                 }
                 .buttonStyle(.plain)
+                .hoverPointing()
                 .help("提醒时间 \(addTimeChipText)，点击清除")
             }
             Button {
@@ -409,19 +598,58 @@ struct ContentView: View {
     private func addCurrent() {
         let t = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
-        store.addTask(title: t, rule: newRule, remindAt: newRemindMinutes, duration: newDuration)
+        withDDAnimation {
+            store.addTask(title: t, rule: newRule, remindAt: newRemindMinutes, duration: newDuration)
+        }
         newTitle = ""
         newRemindMinutes = nil
         newDuration = nil
+    }
+
+    /// 删除后的 3 秒撤销 toast（毛玻璃小条，浮在卡片底部，点“撤销”恢复）
+    private func undoToastView(title: String) -> some View {
+        let display = title.count > 12 ? String(title.prefix(12)) + "…" : title
+        return HStack(spacing: 8) {
+            Image(systemName: "trash.fill")
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+            Text("已删除「\(display)」")
+                .font(.system(size: 11))
+                .foregroundColor(.primary)
+                .lineLimit(1)
+            Button {
+                withDDAnimation {
+                    showUndoToast = false
+                    store.undoDelete()
+                }
+            } label: {
+                Text("撤销")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(Accent.start)
+            }
+            .buttonStyle(.plain)
+            .hoverPointing()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(
+            ZStack {
+                Capsule().fill(.ultraThinMaterial)
+                Capsule().strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+            }
+        )
+        .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
     }
 }
 
 // MARK: - 空状态
 
 struct EmptyStateView: View {
+    @EnvironmentObject var store: Store
+
     var body: some View {
         VStack(spacing: 10) {
-            Image(systemName: "sparkles")
+            Image(systemName: store.dayPeriod().icon)
                 .font(.system(size: 30))
                 .foregroundStyle(Accent.gradient)
             Text("今天还没有任务")
@@ -477,7 +705,7 @@ struct TaskRow: View {
     var body: some View {
         HStack(spacing: 10) {
             Button {
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
+                withDDAnimation {
                     store.toggleDone(task.id)
                 }
             } label: {
@@ -526,13 +754,14 @@ struct TaskRow: View {
             }
             if hovering && !isEditing {
                 Button {
-                    withAnimation { store.delete(task.id) }
+                    withDDAnimation { store.delete(task.id) }
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 15))
                         .foregroundColor(.secondary.opacity(0.55))
                 }
                 .buttonStyle(.plain)
+                .hoverPointing()
                 .help("删除任务")
                 .transition(.opacity)
             }
@@ -596,6 +825,7 @@ struct TaskRow: View {
                            : (isOverdue ? Color.red.opacity(0.14) : Color.secondary.opacity(0.13)))
         )
         .foregroundColor(inPeriod ? .green : (isOverdue ? .red : .secondary))
+        .hoverPointing()
         .onTapGesture { activateApp(); showTimePicker = true }
         .help(inPeriod
               ? "进行中（\(timeChipText)），点击修改"
@@ -624,7 +854,7 @@ struct TaskRow: View {
             Label("重复规则（\(ruleName(task.repeatRule))）", systemImage: "repeat")
         }
         Divider()
-        Button(role: .destructive) { store.delete(task.id) } label: {
+        Button(role: .destructive) { withDDAnimation { store.delete(task.id) } } label: {
             Label("删除任务", systemImage: "trash")
         }
     }
@@ -722,6 +952,20 @@ struct TimePickerPopover: View {
 
 // MARK: - 设置
 
+/// 常用 AI 供应商预设：一键填入 URL + 模型名（不动 Key）
+struct AIProviderPreset: Identifiable {
+    let name: String
+    let url: String
+    let model: String
+    var id: String { url }
+
+    static let all: [AIProviderPreset] = [
+        AIProviderPreset(name: "智谱 GLM", url: "https://api.z.ai/api/paas/v4/chat/completions", model: "glm-4.6"),
+        AIProviderPreset(name: "DeepSeek", url: "https://api.deepseek.com/chat/completions", model: "deepseek-chat"),
+        AIProviderPreset(name: "本地 Ollama", url: "http://localhost:11434/v1/chat/completions", model: "qwen3:4b"),
+    ]
+}
+
 struct SettingsView: View {
     @EnvironmentObject var store: Store
     @State private var loginEnabled = false
@@ -729,6 +973,11 @@ struct SettingsView: View {
     @State private var testing = false
     @State private var testResult: String?
     @State private var testSuccess = false
+    @State private var showAPIKey = false
+    @State private var pendingImport: AppData?
+    @State private var confirmImport = false
+    @State private var backupMessage: String?
+    @State private var backupError = false
 
     private func clipboardString() -> String {
         NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -799,6 +1048,38 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: 供应商预设芯片
+
+    private var presetChips: some View {
+        HStack(spacing: 6) {
+            ForEach(AIProviderPreset.all) { preset in
+                let selected = store.settings.aiBaseURL.trimmingCharacters(in: .whitespaces) == preset.url
+                Button {
+                    withDDAnimation {
+                        store.settings.aiBaseURL = preset.url
+                        store.settings.aiModel = preset.model
+                    }
+                } label: {
+                    Text(preset.name)
+                        .font(.system(size: 10, weight: .semibold))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 3.5)
+                        .background(
+                            Capsule().fill(selected ? Accent.start.opacity(0.16) : Color.primary.opacity(0.06))
+                        )
+                        .overlay(
+                            Capsule().strokeBorder(selected ? Accent.start.opacity(0.45) : Color.clear, lineWidth: 1)
+                        )
+                        .foregroundColor(selected ? Accent.start : Color.secondary)
+                }
+                .buttonStyle(.plain)
+                .hoverPointing()
+                .help("一键填入：\(preset.url) · \(preset.model)")
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("设置")
@@ -838,6 +1119,7 @@ struct SettingsView: View {
 
             GroupBox {
                 VStack(alignment: .leading, spacing: 8) {
+                    presetChips
                     HStack(spacing: 6) {
                         TextField("接口地址（chat/completions 完整 URL）", text: $store.settings.aiBaseURL)
                             .textFieldStyle(.roundedBorder)
@@ -845,9 +1127,25 @@ struct SettingsView: View {
                         pasteButton { store.settings.aiBaseURL = clipboardString() }
                     }
                     HStack(spacing: 6) {
-                        SecureField("API Key（本地模型可留空）", text: $store.settings.apiKey)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(size: 11))
+                        Group {
+                            if showAPIKey {
+                                TextField("API Key（本地模型可留空）", text: $store.settings.apiKey)
+                            } else {
+                                SecureField("API Key（本地模型可留空）", text: $store.settings.apiKey)
+                            }
+                        }
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11))
+                        Button {
+                            showAPIKey.toggle()
+                        } label: {
+                            Image(systemName: showAPIKey ? "eye.slash" : "eye")
+                                .font(.system(size: 12))
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .hoverPointing()
+                        .help(showAPIKey ? "隐藏 Key" : "显示 Key")
                         pasteButton { store.settings.apiKey = clipboardString() }
                     }
                     HStack(spacing: 6) {
@@ -958,7 +1256,7 @@ struct SettingsView: View {
                         if !LoginItem.set(on) { loginEnabled = false }
                     }
                     HStack {
-                        Button { store.resetToday() } label: {
+                        Button { withDDAnimation { store.resetToday() } } label: {
                             Label("重置今日勾选", systemImage: "arrow.counterclockwise")
                         }
                         Spacer()
@@ -968,6 +1266,25 @@ struct SettingsView: View {
                     }
                     .buttonStyle(.link)
                     .font(.system(size: 12))
+                    HStack {
+                        Button { exportBackup() } label: {
+                            Label("导出备份…", systemImage: "square.and.arrow.up")
+                        }
+                        Spacer()
+                        Button { importBackup() } label: {
+                            Label("导入备份…", systemImage: "square.and.arrow.down")
+                        }
+                    }
+                    .buttonStyle(.link)
+                    .font(.system(size: 12))
+                    Text("启动时自动备份当天数据（保留最近 7 份）到 Application Support/DeskDaily/backups/")
+                        .font(.system(size: 9.5))
+                        .foregroundColor(.secondary)
+                    if let backupMessage {
+                        Label(backupMessage, systemImage: backupError ? "xmark.circle.fill" : "checkmark.circle.fill")
+                            .font(.system(size: 10.5))
+                            .foregroundColor(backupError ? Color.red : Color.green)
+                    }
                 }
             } label: {
                 Label("通用", systemImage: "gearshape")
@@ -988,9 +1305,77 @@ struct SettingsView: View {
         }
         .confirmationDialog("确定要清空「\(store.activeSheetName)」的全部任务吗？此操作不可恢复。",
                             isPresented: $confirmClearAll, titleVisibility: .visible) {
-            Button("清空所有任务", role: .destructive) { store.clearAll() }
+            Button("清空所有任务", role: .destructive) { withDDAnimation { store.clearAll() } }
             Button("取消", role: .cancel) {}
         }
+        .confirmationDialog(importConfirmText, isPresented: $confirmImport, titleVisibility: .visible) {
+            Button("覆盖并导入", role: .destructive) {
+                if let data = pendingImport {
+                    withDDAnimation { store.restoreAll(from: data) }
+                }
+                pendingImport = nil
+                backupError = false
+                backupMessage = "已导入备份并生效"
+            }
+            Button("取消", role: .cancel) { pendingImport = nil }
+        }
+    }
+
+    // MARK: 备份 / 恢复
+
+    private var backupStamp: String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = store.tz
+        formatter.dateFormat = "yyyyMMdd-HHmm"
+        return formatter.string(from: Store.now())
+    }
+
+    private var importConfirmText: String {
+        guard let data = pendingImport else { return "确定导入备份吗？" }
+        let taskCount = data.sheets.reduce(0) { $0 + $1.tasks.count }
+        return "将用备份覆盖当前全部数据（备份含 \(data.sheets.count) 个计划表 / \(taskCount) 项任务），确定导入吗？"
+    }
+
+    private func exportBackup() {
+        activateApp()
+        guard let data = store.encodedSnapshot() else {
+            backupError = true
+            backupMessage = "导出失败：无法编码当前数据"
+            return
+        }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "DeskDaily-备份-\(backupStamp).json"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try data.write(to: url, options: .atomic)
+            backupError = false
+            backupMessage = "已导出：\(url.lastPathComponent)"
+        } catch {
+            backupError = true
+            backupMessage = "导出失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func importBackup() {
+        activateApp()
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.message = "选择此前导出的 DeskDaily 备份 JSON 文件"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let data = try? Data(contentsOf: url),
+              let imported = try? JSONDecoder().decode(AppData.self, from: data) else {
+            backupError = true
+            backupMessage = "无法读取：请选择 DeskDaily 导出的 JSON 备份"
+            return
+        }
+        pendingImport = imported
+        confirmImport = true
     }
 }
 
@@ -1030,6 +1415,7 @@ struct ChatView: View {
     @State private var errorMessage: String?
     @State private var detectedTasks: [AITask] = []
     @State private var showNoTasksHint = false
+    @State private var confirmReplace = false
 
     private var configured: Bool {
         !store.settings.aiBaseURL.trimmingCharacters(in: .whitespaces).isEmpty
@@ -1104,6 +1490,11 @@ struct ChatView: View {
             inputBar
         }
         .frame(width: 340, height: 460)
+        .confirmationDialog("将用 AI 清单替换当前的 \(store.visibleTasks.count) 项任务，确定吗？",
+                            isPresented: $confirmReplace, titleVisibility: .visible) {
+            Button("替换为 \(detectedTasks.count) 项新任务", role: .destructive) { replaceToday() }
+            Button("取消", role: .cancel) {}
+        }
     }
 
     private var chatHeader: some View {
@@ -1215,7 +1606,7 @@ struct ChatView: View {
                 }
             }
             HStack(spacing: 10) {
-                Button(action: replaceToday) {
+                Button(action: requestReplaceToday) {
                     Label("替换今日清单", systemImage: "arrow.triangle.2.circlepath.circle.fill")
                         .font(.system(size: 11, weight: .semibold))
                 }
@@ -1349,23 +1740,36 @@ struct ChatView: View {
         fetchReply()
     }
 
+    /// 当前任务较多时先弹确认，避免误触整表覆盖
+    private func requestReplaceToday() {
+        if store.visibleTasks.count >= 3 {
+            confirmReplace = true
+        } else {
+            replaceToday()
+        }
+    }
+
     /// 用 AI 的新清单整体覆盖今天
     private func replaceToday() {
-        store.replaceAll(with: detectedTasks.map {
-            (title: $0.title,
-             repeatDaily: $0.repeatDaily,
-             remindAt: $0.remindAt.flatMap { AIClient.minutes(fromHHMM: $0) },
-             duration: $0.durationMinutes)
-        })
+        withDDAnimation {
+            store.replaceAll(with: detectedTasks.map {
+                (title: $0.title,
+                 repeatDaily: $0.repeatDaily,
+                 remindAt: $0.remindAt.flatMap { AIClient.minutes(fromHHMM: $0) },
+                 duration: $0.durationMinutes)
+            })
+        }
         detectedTasks = []
     }
 
     /// 在现有任务后追加
     private func appendToday() {
-        for task in detectedTasks {
-            let minutes = task.remindAt.flatMap { AIClient.minutes(fromHHMM: $0) }
-            let rule = task.repeatDaily ? RepeatRule() : RepeatRule.once(date: store.currentDay)
-            store.addTask(title: task.title, rule: rule, remindAt: minutes, duration: task.durationMinutes)
+        withDDAnimation {
+            for task in detectedTasks {
+                let minutes = task.remindAt.flatMap { AIClient.minutes(fromHHMM: $0) }
+                let rule = task.repeatDaily ? RepeatRule() : RepeatRule.once(date: store.currentDay)
+                store.addTask(title: task.title, rule: rule, remindAt: minutes, duration: task.durationMinutes)
+            }
         }
         detectedTasks = []
     }
@@ -1435,6 +1839,7 @@ struct SheetEditorView: View {
                         .frame(height: 32)
                     }
                     .buttonStyle(.plain)
+                    .hoverPointing()
                     .help(item.name)
                 }
             }
@@ -1511,6 +1916,7 @@ struct RuleEditorView: View {
                                 .foregroundColor(days.contains(item.0) ? .white : .secondary)
                         }
                         .buttonStyle(.plain)
+                        .hoverPointing()
                     }
                 }
                 Text("已选 \(days.count) 天")

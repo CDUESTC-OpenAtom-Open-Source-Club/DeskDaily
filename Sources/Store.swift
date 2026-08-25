@@ -20,6 +20,33 @@ enum ProgressMode: Int, Codable, Hashable {
     case percent = 1  // 圈内显示完成百分比
 }
 
+// MARK: - 时段（头部问候语 / 空状态图标按时段切换）
+
+enum DayPeriod {
+    case morning, noon, afternoon, evening, lateNight
+
+    /// 5-11 早上好 / 11-13 中午好 / 13-18 下午好 / 18-23 晚上好 / 23-5 夜深了
+    var greeting: String {
+        switch self {
+        case .morning: return "早上好"
+        case .noon: return "中午好"
+        case .afternoon: return "下午好"
+        case .evening: return "晚上好"
+        case .lateNight: return "夜深了"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .morning: return "sun.max.fill"
+        case .noon: return "sun.max"
+        case .afternoon: return "cloud.sun"
+        case .evening: return "sunset"
+        case .lateNight: return "moon.stars"
+        }
+    }
+}
+
 // MARK: - 重复规则
 
 enum RepeatKind: Int, Codable, Hashable {
@@ -217,18 +244,46 @@ enum Notify {
         center?.requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
-    static func post(title: String, body: String) {
+    // 任务提醒通知分类：带「完成 / 推迟10分钟」操作按钮
+    static let taskReminderCategory = "TASK_REMINDER"
+    static let actionComplete = "COMPLETE"
+    static let actionPostpone10 = "POSTPONE10"
+
+    /// 启动时注册分类（重复注册安全，系统以最后一次为准）
+    static func registerCategories() {
+        guard let center = center else { return }
+        let complete = UNNotificationAction(identifier: actionComplete, title: "完成", options: [])
+        let postpone = UNNotificationAction(identifier: actionPostpone10, title: "推迟10分钟", options: [])
+        let category = UNNotificationCategory(identifier: taskReminderCategory,
+                                              actions: [complete, postpone],
+                                              intentIdentifiers: [],
+                                              options: [])
+        center.setNotificationCategories([category])
+    }
+
+    /// taskID/sheetID 齐备时挂上任务分类（可从通知直接完成/推迟）；「新的一天」等普通通知不带按钮
+    static func post(title: String, body: String, taskID: String? = nil, sheetID: String? = nil) {
         guard let center = center else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.sound = .default
+        if let t = taskID, let s = sheetID {
+            content.categoryIdentifier = taskReminderCategory
+            content.userInfo = ["taskID": t, "sheetID": s]
+        }
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         center.add(request)
     }
 }
 
 // MARK: - Store
+
+/// 最近一次删除的任务暂存（撤销删除用，不持久化）
+struct DeletedTaskInfo: Equatable {
+    let task: TaskItem
+    let index: Int
+}
 
 final class Store: ObservableObject {
     static let shared = Store()
@@ -241,6 +296,8 @@ final class Store: ObservableObject {
     @Published var currentDay: String
     @Published var nowMinutes: Int
     @Published var tick: Int = 0
+    /// 撤销删除暂存（只保留最近一次，不写入 data.json）
+    @Published var lastDeleted: DeletedTaskInfo? = nil
 
     private var timerCancellable: AnyCancellable?
 
@@ -278,6 +335,7 @@ final class Store: ObservableObject {
         nowMinutes = 0
         refreshNow()
         persist()
+        writeStartupBackup()
         timerCancellable = Timer.publish(every: 15, on: .main, in: .common).autoconnect()
             .sink { [weak self] _ in self?.onTimer() }
     }
@@ -407,6 +465,17 @@ final class Store: ObservableObject {
         return f.string(from: Store.now())
     }
 
+    /// 时段问候（5-11 早上好 / 11-13 中午好 / 13-18 下午好 / 18-23 晚上好 / 23-5 夜深了）
+    func dayPeriod() -> DayPeriod {
+        switch nowMinutes {
+        case 300..<660: return .morning
+        case 660..<780: return .noon
+        case 780..<1080: return .afternoon
+        case 1080..<1380: return .evening
+        default: return .lateNight
+        }
+    }
+
     func tzShortLabel() -> String {
         settings.tzMode == .beijing ? "北京时间" : "系统时区"
     }
@@ -461,7 +530,42 @@ final class Store: ObservableObject {
 
     func delete(_ id: UUID) {
         mutateActiveTasks { list in
-            list.removeAll { $0.id == id }
+            guard let i = list.firstIndex(where: { $0.id == id }) else { return }
+            lastDeleted = DeletedTaskInfo(task: list[i], index: i)
+            list.remove(at: i)
+        }
+    }
+
+    /// 撤销最近一次删除（恢复到原位置）
+    func undoDelete() {
+        guard let info = lastDeleted else { return }
+        lastDeleted = nil
+        mutateActiveTasks { list in
+            list.insert(info.task, at: min(info.index, list.count))
+        }
+    }
+
+    /// 无论当前是否已勾选，都把该任务在今天置为完成（通知按钮「完成」用）
+    func completeTask(id: UUID) {
+        for i in sheets.indices {
+            guard let j = sheets[i].tasks.firstIndex(where: { $0.id == id }) else { continue }
+            if !sheets[i].tasks[j].doneDays.contains(currentDay) {
+                sheets[i].tasks[j].doneDays.insert(currentDay)
+            }
+            return
+        }
+    }
+
+    /// 推迟提醒 minutes 分钟；原本无时间则设为当前时间 + minutes（通知按钮「推迟10分钟」用）
+    func postponeTask(id: UUID, by minutes: Int) {
+        for i in sheets.indices {
+            guard let j = sheets[i].tasks.firstIndex(where: { $0.id == id }) else { continue }
+            let base = sheets[i].tasks[j].remindAt ?? nowMinutes
+            sheets[i].tasks[j].remindAt = min(max(base + minutes, 0), 1439)
+            // 清掉当日“已提醒”标记，到新时间点会重新提醒
+            sheets[i].tasks[j].remindedDays.remove(currentDay)
+            sheets[i].tasks[j].endRemindedDays.remove(currentDay)
+            return
         }
     }
 
@@ -553,7 +657,7 @@ final class Store: ObservableObject {
                 sheets[i].tasks[j].remindedDays.insert(currentDay)
                 // 只在时间点后 30 分钟内提醒，避免打开 App 时补发一堆过期提醒
                 if nowMinutes - start <= 30 {
-                    fireReminder(for: task, phase: .start)
+                    fireReminder(for: task, phase: .start, sheetID: sheets[i].id)
                 }
             }
             // 时段结束提醒（“阅读后”那一次，有设定时长才有）
@@ -562,7 +666,7 @@ final class Store: ObservableObject {
                 if nowMinutes >= end, !task.endRemindedDays.contains(currentDay) {
                     sheets[i].tasks[j].endRemindedDays.insert(currentDay)
                     if nowMinutes - end <= 30 {
-                        fireReminder(for: sheets[i].tasks[j], phase: .end)
+                        fireReminder(for: sheets[i].tasks[j], phase: .end, sheetID: sheets[i].id)
                     }
                 }
             }
@@ -571,7 +675,7 @@ final class Store: ObservableObject {
 
     private enum ReminderPhase { case start, end }
 
-    private func fireReminder(for task: TaskItem, phase: ReminderPhase) {
+    private func fireReminder(for task: TaskItem, phase: ReminderPhase, sheetID: UUID?) {
         let start = timeString(task.remindAt ?? 0)
         var title = "⏰ \(task.title)"
         var body = "到设定的提醒时间了（\(start)），别忘了完成它"
@@ -583,7 +687,8 @@ final class Store: ObservableObject {
         }
         if settings.soundOn { Sound.play() }
         if settings.notifOn {
-            Notify.post(title: title, body: body)
+            Notify.post(title: title, body: body,
+                        taskID: task.id.uuidString, sheetID: sheetID?.uuidString)
         }
     }
 
@@ -623,10 +728,71 @@ final class Store: ObservableObject {
     }
 
     func persist() {
+        if let encoded = encodedSnapshot() {
+            try? encoded.write(to: Store.dataURL, options: .atomic)
+        }
+    }
+
+    // MARK: 备份 / 恢复
+
+    /// 当前全部数据的 JSON 快照（导出 / 自动备份共用）
+    func encodedSnapshot() -> Data? {
         let data = AppData(settings: settings, sheets: sheets, activeSheetId: activeSheetId,
                            lastSeenDay: currentDay, memories: memories, chatHistory: chatHistory)
-        if let encoded = try? JSONEncoder().encode(data) {
-            try? encoded.write(to: Store.dataURL, options: .atomic)
+        return try? JSONEncoder().encode(data)
+    }
+
+    static var backupDir: URL {
+        dataURL.deletingLastPathComponent().appendingPathComponent("backups", isDirectory: true)
+    }
+
+    /// 用导入的备份整体替换当前状态（UI 全量刷新）
+    func restoreAll(from data: AppData) {
+        let oldWindowMode = settings.windowMode
+        settings = data.settings
+        var restored = data.sheets
+        if restored.isEmpty {
+            restored = [PlanSheet(name: "今日计划", colorHex: "8B5CF6", tasks: [])]
+        }
+        sheets = restored
+        if let id = data.activeSheetId, restored.contains(where: { $0.id == id }) {
+            activeSheetId = id
+        } else {
+            activeSheetId = restored.first?.id
+        }
+        memories = data.memories
+        chatHistory = data.chatHistory
+        if settings.windowMode != oldWindowMode {
+            NotificationCenter.default.post(name: .deskDailyWindowModeChanged, object: nil)
+        }
+        refreshNow()
+        persist()
+    }
+
+    /// 启动时自动备份当天数据，仅保留最近 7 份
+    private func writeStartupBackup() {
+        let fm = FileManager.default
+        let dir = Store.backupDir
+        do {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        } catch {
+            return
+        }
+        guard let data = encodedSnapshot() else { return }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = tz
+        formatter.dateFormat = "yyyyMMdd"
+        let url = dir.appendingPathComponent("data-\(formatter.string(from: Store.now())).json")
+        try? data.write(to: url, options: .atomic)
+        // 文件名即日期，倒序排列后删多余的
+        guard let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return }
+        let stale = files
+            .filter { $0.lastPathComponent.hasPrefix("data-") && $0.pathExtension == "json" }
+            .sorted { $0.lastPathComponent > $1.lastPathComponent }
+            .dropFirst(7)
+        for old in stale {
+            try? fm.removeItem(at: old)
         }
     }
 

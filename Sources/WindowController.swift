@@ -13,6 +13,8 @@ final class WidgetPanel: NSPanel {
 final class WindowController: NSObject, NSWindowDelegate {
     static let shared = WindowController()
     private var panel: WidgetPanel?
+    private var isAnimatingFit = false
+    private var fitTargetHeight: CGFloat = 0
 
     func setup() {
         guard panel == nil else { return }
@@ -85,16 +87,33 @@ final class WindowController: NSObject, NSWindowDelegate {
         return CGRect(x: vis.maxX - w - 24, y: vis.maxY - h - 16, width: w, height: h)
     }
 
-    /// 按内容自适应窗口高度（顶边不动，封顶为屏幕高度的 82%）
+    /// 按内容自适应窗口高度（顶边不动，封顶为屏幕高度的 82%；带平滑动画）
     func fitHeight(to contentHeight: CGFloat) {
         guard let p = panel else { return }
         let vis = (p.screen ?? NSScreen.main)?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
         let newH = min(max(contentHeight, 280), vis.height * 0.82)
+        // 动画进行中且目标一致：忽略重复的高度回调，避免反复重启动画
+        if isAnimatingFit, abs(fitTargetHeight - newH) <= 1 { return }
+        fitTargetHeight = newH
         var f = p.frame
         guard abs(f.height - newH) > 0.6 else { return }
         f.origin.y = f.maxY - newH
         f.size.height = newH
-        p.setFrame(f, display: false)
+        if DDMotion.reduceMotion {
+            p.setFrame(f, display: false)
+            saveFrame()
+            return
+        }
+        isAnimatingFit = true
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.28
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            p.animator().setFrame(f, display: false)
+        }, completionHandler: { [weak self] in
+            guard let self = self else { return }
+            self.isAnimatingFit = false
+            self.saveFrame()
+        })
     }
 
     private func applyWindowMode() {
@@ -108,8 +127,9 @@ final class WindowController: NSObject, NSWindowDelegate {
 
     // MARK: - NSWindowDelegate
 
-    func windowDidMove(_ notification: Notification) { saveFrame() }
-    func windowDidResize(_ notification: Notification) { saveFrame() }
+    // 高度自适应动画期间不逐帧保存 frame，动画结束时统一保存
+    func windowDidMove(_ notification: Notification) { if !isAnimatingFit { saveFrame() } }
+    func windowDidResize(_ notification: Notification) { if !isAnimatingFit { saveFrame() } }
 
     private func saveFrame() {
         guard let p = panel else { return }

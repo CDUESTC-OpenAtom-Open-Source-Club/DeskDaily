@@ -11,6 +11,28 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     ) {
         completionHandler([.banner, .sound])
     }
+
+    /// 点击通知上的操作按钮（完成 / 推迟10分钟）→ 主线程路由到 Store
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let info = response.notification.request.content.userInfo
+        let action = response.actionIdentifier
+        let taskID = (info["taskID"] as? String).flatMap(UUID.init(uuidString:))
+        if let taskID = taskID {
+            DispatchQueue.main.async {
+                let store = Store.shared
+                if action == Notify.actionComplete {
+                    withDDAnimation { store.completeTask(id: taskID) }
+                } else if action == Notify.actionPostpone10 {
+                    withDDAnimation { store.postponeTask(id: taskID, by: 10) }
+                }
+            }
+        }
+        completionHandler()
+    }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -19,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = Store.shared
         WindowController.shared.setup()
         Notify.requestAuth()
+        Notify.registerCategories()
         Notify.center?.delegate = NotificationDelegate.shared
     }
 
@@ -29,6 +52,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appItem = NSMenuItem(title: "DeskDaily", action: nil, keyEquivalent: "")
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "关于 DeskDaily", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        let undoItem = NSMenuItem(title: "撤销删除", action: #selector(undoDeleteMenu(_:)), keyEquivalent: "z")
+        undoItem.target = self
+        appMenu.addItem(undoItem)
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "退出 DeskDaily", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
@@ -49,6 +76,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // 点 Dock 图标 / 再次双击应用时，把面板带回到最前
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         WindowController.shared.showPanel()
+        return true
+    }
+
+    /// App 菜单「撤销删除 ⌘Z」与卡片底部 toast 的撤销走同一逻辑
+    @objc private func undoDeleteMenu(_ sender: Any?) {
+        withDDAnimation { Store.shared.undoDelete() }
+    }
+}
+
+extension AppDelegate: NSMenuItemValidation {
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(undoDeleteMenu(_:)) {
+            return Store.shared.lastDeleted != nil
+        }
         return true
     }
 }
