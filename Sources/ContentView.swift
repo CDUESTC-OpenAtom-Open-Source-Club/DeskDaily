@@ -191,6 +191,23 @@ struct ContentView: View {
     @State private var celebrateToken = 0
     @State private var celebrationAt: Date? = nil
     @State private var ringPulse = false
+    /// 周视图：0 = 今天，1 = 明天（最多 1）
+    @State private var viewOffset = 0
+    /// 切换视角的滑动方向（明天从右进，今天从左进）
+    @State private var slideForward = true
+    /// 自然语言快速添加：当前解析结果 + 芯片移除/回填签名
+    @State private var addParse: QuickAddParse? = nil
+    @State private var appliedTimeToken: String? = nil
+    @State private var appliedDurationToken: String? = nil
+    @State private var appliedRuleToken: String? = nil
+    @State private var dismissedTimeToken: String? = nil
+    @State private var dismissedDurationToken: String? = nil
+    @State private var dismissedRuleToken: String? = nil
+    /// 通用轻提示（存模板 / 明天视角点勾等）
+    @State private var infoToast: String? = nil
+    @State private var infoToastToken = 0
+    /// ⌘N「新任务」聚焦添加输入框
+    @FocusState private var addFieldFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -202,6 +219,7 @@ struct ContentView: View {
                 .background(GeometryReader { g in
                     Color.clear.preference(key: HeightKey.self, value: g.size.height)
                 })
+            focusBarSection
             taskList
             addBarSection
                 .background(GeometryReader { g in
@@ -231,6 +249,24 @@ struct ContentView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
+        .overlay(alignment: .bottom) {
+            if let infoToast {
+                Label(infoToast, systemImage: "info.circle.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.primary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(
+                        ZStack {
+                            Capsule().fill(.ultraThinMaterial)
+                            Capsule().strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+                        }
+                    )
+                    .shadow(color: .black.opacity(0.15), radius: 6, y: 2)
+                    .padding(.bottom, 44)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
         .onChange(of: store.lastDeleted) { info in
             if info != nil {
                 undoToastToken += 1
@@ -255,6 +291,10 @@ struct ContentView: View {
             pendingReviewMessage = store.todayReviewMessage()
             aiOpen = true
         }
+        .onReceive(NotificationCenter.default.publisher(for: .deskDailyFocusAddField)) { _ in
+            // 菜单「新任务 ⌘N」→ 聚焦添加输入框
+            addFieldFocused = true
+        }
         .popover(isPresented: $settingsOpen, arrowEdge: .bottom) {
             SettingsView()
         }
@@ -269,6 +309,29 @@ struct ContentView: View {
 
     private var sheetBar: some View {
         HStack(spacing: 8) {
+            // 今天 | 明天 周视图切换（带滑动方向）
+            Picker("视角", selection: Binding(
+                get: { viewOffset },
+                set: { newValue in
+                    guard newValue != viewOffset else { return }
+                    slideForward = newValue > viewOffset
+                    withDDAnimation { viewOffset = newValue }
+                })) {
+                Text("今天").tag(0)
+                Text("明天").tag(1)
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 86)
+            .labelsHidden()
+            .onChange(of: viewOffset) { offset in
+                // 切视角重置草稿：明天视角新任务默认「仅明天」
+                doneExpanded = false
+                withDDAnimation {
+                    newRule = offset == 1
+                        ? RepeatRule.once(date: store.tomorrowKey() ?? store.currentDay)
+                        : RepeatRule()
+                }
+            }
             Menu {
                 ForEach(store.sheets) { sheet in
                     Button {
@@ -292,6 +355,42 @@ struct ContentView: View {
                     Label("重命名 / 换颜色…", systemImage: "paintbrush")
                 }
                 Divider()
+                // 模板库
+                Button {
+                    store.saveCurrentAsTemplate()
+                    showInfoToast("已存为模板「\(store.templates.last?.name ?? "")」")
+                } label: {
+                    Label("存为模板", systemImage: "square.and.arrow.down")
+                }
+                Menu {
+                    if store.templates.isEmpty {
+                        Button("暂无模板，先把当前表存为模板") {}.disabled(true)
+                    } else {
+                        ForEach(store.templates) { tpl in
+                            Button {
+                                withDDAnimation { store.instantiateTemplate(tpl.id) }
+                                showInfoToast("已从模板新建「\(tpl.name)」")
+                            } label: {
+                                Text(tpl.name)
+                            }
+                        }
+                    }
+                } label: {
+                    Label("从模板新建", systemImage: "doc.on.doc")
+                }
+                Menu {
+                    ForEach(store.templates) { tpl in
+                        Button(role: .destructive) {
+                            withDDAnimation { store.deleteTemplate(tpl.id) }
+                        } label: {
+                            Text(tpl.name)
+                        }
+                    }
+                } label: {
+                    Label("删除模板", systemImage: "trash")
+                }
+                .disabled(store.templates.isEmpty)
+                Divider()
                 Button(role: .destructive) { confirmDeleteSheet = true } label: {
                     Label("删除当前计划表", systemImage: "trash")
                 }
@@ -302,6 +401,7 @@ struct ContentView: View {
                     Text(store.activeSheetName)
                         .font(.system(size: 11.5, weight: .semibold))
                         .foregroundColor(.primary)
+                        .lineLimit(1)
                     Image(systemName: "chevron.down")
                         .font(.system(size: 8, weight: .bold))
                         .foregroundColor(.secondary)
@@ -344,16 +444,40 @@ struct ContentView: View {
 
     // MARK: - 顶部：日期 + 进度环 + 菜单
 
+    /// 专注进行时的番茄钟条（sheetBar 下方）
+    @ViewBuilder
+    private var focusBarSection: some View {
+        if store.focusSession != nil {
+            FocusBarView()
+                .padding(.horizontal, 14)
+                .padding(.bottom, 8)
+                .background(GeometryReader { g in
+                    Color.clear.preference(key: HeightKey.self, value: g.size.height)
+                })
+                .transition(.move(edge: .top).combined(with: .opacity))
+        }
+    }
+
     private var headerSection: some View {
-        let header = store.dateHeader()
-        let done = store.doneCount
-        let total = store.visibleTasks.count
+        let header = store.dateHeader(offset: viewOffset)
+        let done = viewOffset == 0 ? store.doneCount : 0
+        let total = store.visibleTasks(offset: viewOffset).count
         return HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(header.weekday)
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(Accent.gradient)
-                    .kerning(2)
+                HStack(spacing: 5) {
+                    Text(header.weekday)
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Accent.gradient)
+                        .kerning(2)
+                    if viewOffset == 1 {
+                        Text("明天")
+                            .font(.system(size: 9, weight: .bold))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Accent.start.opacity(0.15)))
+                            .foregroundColor(Accent.start)
+                    }
+                }
                 Text(header.date)
                     .font(.system(size: 24, weight: .bold, design: .rounded))
                 Text(store.dayPeriod().greeting)
@@ -447,8 +571,9 @@ struct ContentView: View {
 
     // MARK: - 任务列表（未完成在上；“现在”线插在定时未完成序列中；已完成折叠在底部）
 
-    /// 今日任务是否全部完成（total > 0 且 done == total）
+    /// 今日任务是否全部完成（total > 0 且 done == total；庆祝仅限今天视角）
     private var allDoneToday: Bool {
+        guard viewOffset == 0 else { return false }
         let total = store.visibleTasks.count
         return total > 0 && store.doneCount == total
     }
@@ -466,12 +591,15 @@ struct ContentView: View {
         }
     }
 
+    /// 当前视角的任务（0 = 今天，1 = 明天）
+    private var currentTasks: [TaskItem] { store.visibleTasks(offset: viewOffset) }
+
     private var undoneTasks: [TaskItem] {
-        store.visibleTasks.filter { !store.isDone($0) }
+        currentTasks.filter { !store.isDone($0, offset: viewOffset) }
     }
 
     private var doneTasks: [TaskItem] {
-        store.visibleTasks.filter { store.isDone($0) }
+        currentTasks.filter { store.isDone($0, offset: viewOffset) }
     }
 
     /// 未完成且带提醒时间的任务数（visibleTasks 已按时间升序，定时任务排在最前）
@@ -479,8 +607,8 @@ struct ContentView: View {
         undoneTasks.prefix { $0.remindAt != nil }.count
     }
 
-    /// “现在”线只插在“有时间且未完成”的任务序列中
-    private var showNowLine: Bool { timedUndoneCount > 0 }
+    /// “现在”线只插在“有时间且未完成”的任务序列中（仅今天视角）
+    private var showNowLine: Bool { viewOffset == 0 && timedUndoneCount > 0 }
 
     /// “现在”线在未完成序列里应插入的位置（当前时刻落在哪个任务之前）
     private var nowLineIndex: Int {
@@ -496,8 +624,12 @@ struct ContentView: View {
         let showLine = showNowLine
         return ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 2) {
-                if store.visibleTasks.isEmpty {
-                    EmptyStateView()
+                if currentTasks.isEmpty {
+                    EmptyStateView(
+                        title: viewOffset == 1 ? "明天还没有任务" : "今天还没有任务",
+                        message: viewOffset == 1
+                            ? "试试输入「9点 起床」快速添加\n明天的事，明天再勾"
+                            : "在下方输入框添加任务\n完成后点击左侧圆圈打勾")
                 }
                 if allDoneToday {
                     AllDoneView(doneAt: celebrationAt)
@@ -512,7 +644,7 @@ struct ContentView: View {
                     nowLine
                 }
                 if !done.isEmpty {
-                    doneHeader(doneCount: done.count, total: store.visibleTasks.count)
+                    doneHeader(doneCount: done.count, total: currentTasks.count)
                     if doneExpanded {
                         ForEach(done) { task in
                             taskRow(task)
@@ -529,6 +661,11 @@ struct ContentView: View {
                 }
             )
         }
+        .id(viewOffset)
+        .transition(.asymmetric(
+            insertion: .move(edge: slideForward ? .trailing : .leading).combined(with: .opacity),
+            removal: .move(edge: slideForward ? .leading : .trailing).combined(with: .opacity)
+        ))
     }
 
     private var nowLine: some View {
@@ -537,7 +674,11 @@ struct ContentView: View {
     }
 
     private func taskRow(_ task: TaskItem) -> some View {
-        TaskRow(task: task, done: store.isDone(task), nowMinutes: store.nowMinutes)
+        TaskRow(task: task,
+                done: store.isDone(task, offset: viewOffset),
+                nowMinutes: store.nowMinutes,
+                tomorrowMode: viewOffset == 1,
+                onBlockedToggle: { showInfoToast("明天的事明天再说 😄") })
             .transition(DDMotion.taskRowTransition)
     }
 
@@ -564,82 +705,81 @@ struct ContentView: View {
         .padding(.top, 4)
     }
 
-    // MARK: - 底部添加栏
+    // MARK: - 底部添加栏（支持自然语言快速添加 + 解析预览芯片）
+
+    /// 是否显示解析/草稿芯片行（时间 / 时长 / 规则 任一存在即显示）
+    private var showsDraftChips: Bool {
+        newRemindMinutes != nil || (newDuration ?? 0) > 0 || newRule != RepeatRule()
+    }
 
     private var addBarSection: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "plus.circle.fill")
-                .font(.system(size: 16))
-                .foregroundStyle(Accent.gradient)
-            TextField("添加任务…", text: $newTitle, onEditingChanged: { editing in
-                if editing { activateApp() }
-            })
-                .textFieldStyle(.plain)
-                .font(.system(size: 13))
-                .onSubmit(addCurrent)
-            if newRemindMinutes != nil {
+        VStack(spacing: 6) {
+            if showsDraftChips {
+                draftChipRow
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+            HStack(spacing: 8) {
+                Image(systemName: "plus.circle.fill")
+                    .font(.system(size: 16))
+                    .foregroundStyle(Accent.gradient)
+                TextField("添加任务…（试试「9:30 开会 45分钟」）", text: $newTitle, onEditingChanged: { editing in
+                    if editing { activateApp() }
+                })
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+                    .focused($addFieldFocused)
+                    .onChange(of: newTitle) { _ in syncDraftWithParse() }
+                    .onSubmit(addCurrent)
                 Button {
-                    newRemindMinutes = nil
-                    newDuration = nil
+                    showAddTime = true
                 } label: {
-                    Text(addTimeChipText)
-                        .font(.system(size: 10.5, weight: .semibold, design: .rounded))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(Accent.start.opacity(0.15)))
-                        .foregroundColor(Accent.start)
+                    Image(systemName: newRemindMinutes == nil ? "clock" : "clock.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(newRemindMinutes == nil ? Color.secondary.opacity(0.6) : Accent.start)
                 }
                 .buttonStyle(.plain)
-                .hoverPointing()
-                .help("提醒时间 \(addTimeChipText)，点击清除")
-            }
-            Button {
-                showAddTime = true
-            } label: {
-                Image(systemName: newRemindMinutes == nil ? "clock" : "clock.fill")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(newRemindMinutes == nil ? Color.secondary.opacity(0.6) : Accent.start)
-            }
-            .buttonStyle(.plain)
-            .help("设置提醒时间（可选）")
-            .popover(isPresented: $showAddTime, arrowEdge: .bottom) {
-                TimePickerPopover(initialMinutes: newRemindMinutes ?? store.nowMinutes,
-                                  initialDuration: newDuration ?? 0) { picked, duration in
-                    newRemindMinutes = picked
-                    newDuration = duration
-                    showAddTime = false
+                .help("设置提醒时间（可选）")
+                .popover(isPresented: $showAddTime, arrowEdge: .bottom) {
+                    TimePickerPopover(initialMinutes: newRemindMinutes ?? store.nowMinutes,
+                                      initialDuration: newDuration ?? 0) { picked, duration in
+                        newRemindMinutes = picked
+                        newDuration = duration
+                        showAddTime = false
+                    }
                 }
-            }
-            Button {
-                showAddRule = true
-            } label: {
-                Image(systemName: ruleIcon(newRule))
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(newRule.kind == .daily ? Accent.end : Color.secondary.opacity(0.6))
-            }
-            .buttonStyle(.plain)
-            .help("重复规则：\(ruleName(newRule))，点击修改")
-            .popover(isPresented: $showAddRule, arrowEdge: .bottom) {
-                RuleEditorView(initial: newRule) { rule in
-                    newRule = rule
-                    showAddRule = false
+                Button {
+                    showAddRule = true
+                } label: {
+                    Image(systemName: ruleIcon(newRule))
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(newRule.kind == .daily ? Accent.end : Color.secondary.opacity(0.6))
                 }
+                .buttonStyle(.plain)
+                .help("重复规则：\(ruleName(newRule))，点击修改")
+                .popover(isPresented: $showAddRule, arrowEdge: .bottom) {
+                    RuleEditorView(initial: newRule) { rule in
+                        newRule = rule
+                        showAddRule = false
+                    }
+                }
+                Button(action: addCurrent) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 17))
+                        .foregroundStyle(
+                            newTitle.trimmingCharacters(in: .whitespaces).isEmpty
+                                ? AnyShapeStyle(Color.secondary.opacity(0.35))
+                                : AnyShapeStyle(Accent.gradient)
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(newTitle.trimmingCharacters(in: .whitespaces).isEmpty)
+                .help("添加")
             }
-            Button(action: addCurrent) {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 17))
-                    .foregroundStyle(
-                        newTitle.trimmingCharacters(in: .whitespaces).isEmpty
-                            ? AnyShapeStyle(Color.secondary.opacity(0.35))
-                            : AnyShapeStyle(Accent.gradient)
-                    )
-            }
-            .buttonStyle(.plain)
-            .disabled(newTitle.trimmingCharacters(in: .whitespaces).isEmpty)
-            .help("添加")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
+        .animation(ddAnimation, value: showsDraftChips)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Color.primary.opacity(0.05))
@@ -653,21 +793,123 @@ struct ContentView: View {
         .padding(.bottom, 14)
     }
 
-    private var addTimeChipText: String {
-        guard let m = newRemindMinutes else { return "" }
-        guard let d = newDuration, d > 0 else { return store.timeString(m) }
-        return "\(store.timeString(m))-\(store.timeString((m + d) % 1440))"
+    // MARK: 解析预览芯片行
+
+    private var draftChipRow: some View {
+        HStack(spacing: 6) {
+            if let m = newRemindMinutes {
+                draftChip(icon: "clock.fill", text: store.timeString(m)) {
+                    dismissedTimeToken = addParse?.timeToken ?? appliedTimeToken
+                    newRemindMinutes = nil
+                }
+                .help("提醒时间 \(store.timeString(m))（来自输入解析或手动设置），点 ✗ 移除")
+            }
+            if let d = newDuration, d > 0 {
+                draftChip(icon: "hourglass", text: "\(d) 分钟") {
+                    dismissedDurationToken = addParse?.durationToken ?? appliedDurationToken
+                    newDuration = nil
+                }
+                .help("时长 \(d) 分钟，点 ✗ 移除")
+            }
+            if newRule != RepeatRule() {
+                draftChip(icon: ruleIcon(newRule), text: draftRuleChipText) {
+                    dismissedRuleToken = addParse?.ruleToken ?? appliedRuleToken
+                    withDDAnimation { newRule = RepeatRule() }
+                }
+                .help("重复规则 \(ruleName(newRule))，点 ✗ 恢复每天")
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// 规则芯片文案（明天的 once 显示「仅明天」）
+    private var draftRuleChipText: String {
+        if newRule.kind == .once, let key = store.tomorrowKey(), newRule.date == key {
+            return "仅明天"
+        }
+        return ruleName(newRule)
+    }
+
+    private func draftChip(icon: String, text: String, onRemove: @escaping () -> Void) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 9, weight: .semibold))
+            Text(text)
+                .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                .lineLimit(1)
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 10))
+                    .foregroundColor(Accent.start.opacity(0.55))
+            }
+            .buttonStyle(.plain)
+            .hoverPointing()
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(Capsule().fill(Accent.start.opacity(0.12)))
+        .overlay(Capsule().strokeBorder(Accent.start.opacity(0.25), lineWidth: 0.8))
+        .foregroundColor(Accent.start)
+    }
+
+    /// 输入变化时重新解析：解析值作为初值回填（已手动移除/已回填过的同片段不重复回填）
+    private func syncDraftWithParse() {
+        let parse = parseQuickAdd(newTitle, tomorrowKey: store.tomorrowKey())
+        addParse = parse
+        guard parse.matched else { return }
+        if let token = parse.timeToken, token != dismissedTimeToken, token != appliedTimeToken {
+            newRemindMinutes = parse.remindMinutes
+            appliedTimeToken = token
+        }
+        if let token = parse.durationToken, token != dismissedDurationToken, token != appliedDurationToken {
+            newDuration = parse.duration
+            appliedDurationToken = token
+        }
+        if let token = parse.ruleToken, token != dismissedRuleToken, token != appliedRuleToken {
+            if let rule = parse.rule {
+                withDDAnimation { newRule = rule }
+                appliedRuleToken = token
+            }
+        }
     }
 
     private func addCurrent() {
-        let t = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty else { return }
+        let raw = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return }
+        // 解析出干净标题（完全无匹配时保持原文本，行为与之前一致）
+        var title = raw
+        if let parse = addParse, parse.matched, !parse.title.isEmpty {
+            title = parse.title
+        }
+        let scheduledForTomorrow = newRule.kind == .once && newRule.date == store.tomorrowKey()
         withDDAnimation {
-            store.addTask(title: t, rule: newRule, remindAt: newRemindMinutes, duration: newDuration)
+            store.addTask(title: title, rule: newRule, remindAt: newRemindMinutes, duration: newDuration)
+        }
+        if scheduledForTomorrow, viewOffset == 0 {
+            showInfoToast("已安排到明天 ✓ 切到「明天」看看")
         }
         newTitle = ""
         newRemindMinutes = nil
         newDuration = nil
+        addParse = nil
+        appliedTimeToken = nil
+        appliedDurationToken = nil
+        appliedRuleToken = nil
+        dismissedTimeToken = nil
+        dismissedDurationToken = nil
+        dismissedRuleToken = nil
+    }
+
+    // MARK: 通用轻提示
+
+    private func showInfoToast(_ message: String) {
+        withDDAnimation { infoToast = message }
+        infoToastToken += 1
+        let token = infoToastToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) {
+            guard infoToastToken == token else { return }
+            withDDAnimation { infoToast = nil }
+        }
     }
 
     /// 删除后的 3 秒撤销 toast（毛玻璃小条，浮在卡片底部，点“撤销”恢复）
@@ -710,16 +952,18 @@ struct ContentView: View {
 
 struct EmptyStateView: View {
     @EnvironmentObject var store: Store
+    var title: String = "今天还没有任务"
+    var message: String = "在下方输入框添加任务\n完成后点击左侧圆圈打勾"
 
     var body: some View {
         VStack(spacing: 10) {
             Image(systemName: store.dayPeriod().icon)
                 .font(.system(size: 30))
                 .foregroundStyle(Accent.gradient)
-            Text("今天还没有任务")
+            Text(title)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundColor(.primary.opacity(0.75))
-            Text("在下方输入框添加任务\n完成后点击左侧圆圈打勾")
+            Text(message)
                 .font(.system(size: 11))
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
@@ -855,6 +1099,9 @@ struct TaskRow: View {
     let task: TaskItem
     let done: Bool
     let nowMinutes: Int
+    /// 明天视角：不允许勾选（点勾给提示）、隐藏“现在/过期/进行中”态与 streak
+    var tomorrowMode: Bool = false
+    var onBlockedToggle: (() -> Void)? = nil
 
     @EnvironmentObject var store: Store
     @State private var hovering = false
@@ -870,12 +1117,12 @@ struct TaskRow: View {
 
     /// 正处于任务时段内（开始 ≤ 现在 < 结束）
     private var inPeriod: Bool {
-        guard !done, let s = task.remindAt, let d = task.durationMinutes else { return false }
+        guard !tomorrowMode, !done, let s = task.remindAt, let d = task.durationMinutes else { return false }
         return nowMinutes >= s && nowMinutes < s + d
     }
 
     private var isOverdue: Bool {
-        guard !done, let s = task.remindAt else { return false }
+        guard !tomorrowMode, !done, let s = task.remindAt else { return false }
         if let end = periodEnd { return nowMinutes > end }
         return nowMinutes > s + 1
     }
@@ -889,8 +1136,13 @@ struct TaskRow: View {
     var body: some View {
         HStack(spacing: 10) {
             Button {
-                withDDAnimation {
-                    store.toggleDone(task.id)
+                if tomorrowMode {
+                    // 勾选仅限今天视角
+                    onBlockedToggle?()
+                } else {
+                    withDDAnimation {
+                        store.toggleDone(task.id)
+                    }
                 }
             } label: {
                 ZStack {
@@ -976,7 +1228,7 @@ struct TaskRow: View {
     }
 
     private var titleView: some View {
-        let streakDays = task.repeatRule.kind == .once ? 0 : store.streak(of: task)
+        let streakDays = (tomorrowMode || task.repeatRule.kind == .once) ? 0 : store.streak(of: task)
         return HStack(spacing: 6) {
             Text(task.title)
                 .font(.system(size: 13.5, weight: done ? .regular : .medium))
@@ -1033,6 +1285,15 @@ struct TaskRow: View {
 
     @ViewBuilder
     private var contextMenuItems: some View {
+        if !tomorrowMode {
+            Button {
+                withDDAnimation { store.startFocus(task.id) }
+            } label: {
+                Label("开始专注 \(store.focusMinutes(for: task)) 分钟", systemImage: "play.circle")
+            }
+            .help("番茄钟：任务时长 \(store.focusMinutes(for: task)) 分钟（时长超过 60 分钟按 25 分钟计）")
+            Divider()
+        }
         Button { activateApp(); showTimePicker = true } label: {
             Label(task.remindAt == nil ? "设置提醒时间…" : "修改提醒时间…", systemImage: "clock")
         }
@@ -1067,6 +1328,100 @@ struct TaskRow: View {
         let t = editBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
         if !t.isEmpty { store.rename(task.id, to: t) }
         isEditing = false
+    }
+}
+
+// MARK: - 番茄钟专注条（sheetBar 下方：渐变进度 + 任务名 + 剩余时间 + 暂停/完成/取消）
+
+struct FocusBarView: View {
+    @EnvironmentObject var store: Store
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
+            content
+        }
+    }
+
+    private var remainingSeconds: Int {
+        guard let session = store.focusSession else { return 0 }
+        if let paused = session.pausedRemaining { return paused }
+        return max(Int(session.endsAt.timeIntervalSince(Store.now())), 0)
+    }
+
+    private var content: some View {
+        let remaining = remainingSeconds
+        let session = store.focusSession
+        let total = max(session?.totalSeconds ?? 1, 1)
+        let progress = CGFloat(remaining) / CGFloat(total)
+        let task = session.flatMap { store.taskByID($0.taskID) }
+        return HStack(spacing: 10) {
+            Image(systemName: session?.isPaused == true ? "pause.circle.fill" : "timer")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Accent.gradient)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(task?.title ?? "专注中")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                GeometryReader { g in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.primary.opacity(0.08))
+                        Capsule()
+                            .fill(Accent.gradient)
+                            .frame(width: max(4, g.size.width * progress))
+                    }
+                }
+                .frame(height: 5)
+            }
+            Text(Self.mmss(remaining))
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .monospacedDigit()
+                .foregroundColor(.primary)
+            Button {
+                store.togglePauseFocus()
+            } label: {
+                Image(systemName: session?.isPaused == true ? "play.circle.fill" : "pause.circle.fill")
+                    .font(.system(size: 16))
+                    .foregroundColor(Accent.start)
+            }
+            .buttonStyle(.plain)
+            .hoverPointing()
+            .help(session?.isPaused == true ? "继续专注" : "暂停专注")
+            Button {
+                withDDAnimation { store.completeFocus() }
+            } label: {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 16))
+                    .foregroundColor(.green)
+            }
+            .buttonStyle(.plain)
+            .hoverPointing()
+            .help("标记任务完成并结束专注")
+            Button {
+                withDDAnimation { store.stopFocus() }
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 16))
+                    .foregroundColor(.secondary.opacity(0.6))
+            }
+            .buttonStyle(.plain)
+            .hoverPointing()
+            .help("放弃本次专注")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Accent.start.opacity(0.10))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Accent.start.opacity(0.25), lineWidth: 1)
+        )
+    }
+
+    private static func mmss(_ seconds: Int) -> String {
+        String(format: "%02d:%02d", seconds / 60, seconds % 60)
     }
 }
 
@@ -1464,6 +1819,19 @@ struct SettingsView: View {
 
             GroupBox {
                 VStack(alignment: .leading, spacing: 8) {
+                    Toggle(isOn: $store.settings.globalHotkey) {
+                        Label("全局热键 ⌥⇧D", systemImage: "keyboard")
+                    }
+                    Text("在任何应用里按 Option+Shift+D 都能显示 / 隐藏桌面卡片。")
+                        .font(.system(size: 9.5))
+                        .foregroundColor(.secondary)
+                    Toggle(isOn: $store.settings.statusBarIcon) {
+                        Label("菜单栏迷你入口", systemImage: "menubar.rectangle")
+                    }
+                    Text("在系统菜单栏显示清单图标：查看 / 勾选今日任务，不必唤出卡片。")
+                        .font(.system(size: 9.5))
+                        .foregroundColor(.secondary)
+                    Divider().opacity(0.5)
                     Toggle(isOn: $loginEnabled) {
                         Label("登录时自动启动", systemImage: "power")
                     }
@@ -1505,7 +1873,7 @@ struct SettingsView: View {
                 Label("通用", systemImage: "gearshape")
             }
 
-            Text("DeskDaily v1.0 · 数据保存在本机\n~/Library/Application Support/DeskDaily/")
+            Text("DeskDaily v1.6 · 数据保存在本机\n~/Library/Application Support/DeskDaily/")
                 .font(.system(size: 9.5))
                 .foregroundColor(.secondary)
                 .frame(maxWidth: .infinity, alignment: .center)
@@ -1517,6 +1885,12 @@ struct SettingsView: View {
         .onChange(of: store.settings.tzMode) { _ in store.refreshNow() }
         .onChange(of: store.settings.windowMode) { _ in
             NotificationCenter.default.post(name: .deskDailyWindowModeChanged, object: nil)
+        }
+        .onChange(of: store.settings.globalHotkey) { on in
+            Hotkey.setEnabled(on)
+        }
+        .onChange(of: store.settings.statusBarIcon) { on in
+            StatusBarManager.shared.setEnabled(on)
         }
         .confirmationDialog("确定要清空「\(store.activeSheetName)」的全部任务吗？此操作不可恢复。",
                             isPresented: $confirmClearAll, titleVisibility: .visible) {

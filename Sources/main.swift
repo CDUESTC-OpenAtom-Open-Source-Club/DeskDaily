@@ -50,6 +50,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Notify.requestAuth()
         Notify.registerCategories()
         Notify.center?.delegate = NotificationDelegate.shared
+        // 全局热键 / 菜单栏迷你入口（按设置开关）
+        Hotkey.setEnabled(Store.shared.settings.globalHotkey)
+        StatusBarManager.shared.setEnabled(Store.shared.settings.statusBarIcon)
     }
 
     // 程序化构建主菜单（含编辑菜单），保证输入框里 ⌘X/⌘C/⌘V/⌘A 可用
@@ -67,6 +70,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appMenu.addItem(withTitle: "退出 DeskDaily", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
         mainMenu.addItem(appItem)
+
+        let taskItem = NSMenuItem(title: "任务", action: nil, keyEquivalent: "")
+        let taskMenu = NSMenu(title: "任务")
+        let newItem = NSMenuItem(title: "新任务", action: #selector(focusAddFieldMenu(_:)), keyEquivalent: "n")
+        newItem.target = self
+        taskMenu.addItem(newItem)
+        taskMenu.addItem(.separator())
+        let toggleItem = NSMenuItem(title: "显示 / 隐藏卡片 ⌥⇧D", action: #selector(togglePanelMenu(_:)), keyEquivalent: "")
+        toggleItem.target = self
+        taskMenu.addItem(toggleItem)
+        taskItem.submenu = taskMenu
+        mainMenu.addItem(taskItem)
 
         let editItem = NSMenuItem(title: "编辑", action: nil, keyEquivalent: "")
         let editMenu = NSMenu(title: "编辑")
@@ -89,6 +104,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// App 菜单「撤销删除 ⌘Z」与卡片底部 toast 的撤销走同一逻辑
     @objc private func undoDeleteMenu(_ sender: Any?) {
         withDDAnimation { Store.shared.undoDelete() }
+    }
+
+    /// 菜单「新任务 ⌘N」：唤回卡片并聚焦添加输入框（ContentView 监听）
+    @objc private func focusAddFieldMenu(_ sender: Any?) {
+        WindowController.shared.showPanel()
+        activateApp()
+        NotificationCenter.default.post(name: .deskDailyFocusAddField, object: nil)
+    }
+
+    @objc private func togglePanelMenu(_ sender: Any?) {
+        WindowController.shared.togglePanel()
     }
 }
 

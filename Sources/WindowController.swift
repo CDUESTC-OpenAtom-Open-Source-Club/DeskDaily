@@ -6,6 +6,8 @@ extension Notification.Name {
     static let deskDailyWindowModeChanged = Notification.Name("DeskDailyWindowModeChanged")
     /// 睡前复盘通知/按钮 → 打开 AI 复盘对话
     static let deskDailyOpenReview = Notification.Name("DeskDailyOpenReview")
+    /// 菜单 ⌘N「新任务」→ 聚焦添加输入框
+    static let deskDailyFocusAddField = Notification.Name("DeskDailyFocusAddField")
 }
 
 final class WidgetPanel: NSPanel {
@@ -67,6 +69,35 @@ final class WindowController: NSObject, NSWindowDelegate {
             NSApp.activate()
         } else {
             NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    /// 全局热键 ⌥⇧D / 菜单栏：切换卡片显隐（淡入淡出，不抢前台焦点）
+    func togglePanel() {
+        guard let p = panel else { return }
+        if p.isVisible {
+            if DDMotion.reduceMotion {
+                p.orderOut(nil)
+            } else {
+                NSAnimationContext.runAnimationGroup({ ctx in
+                    ctx.duration = 0.18
+                    p.animator().alphaValue = 0
+                }, completionHandler: {
+                    p.orderOut(nil)
+                    p.alphaValue = 1
+                })
+            }
+        } else {
+            p.orderFrontRegardless()
+            if DDMotion.reduceMotion {
+                p.alphaValue = 1
+            } else {
+                p.alphaValue = 0
+                NSAnimationContext.runAnimationGroup({ ctx in
+                    ctx.duration = 0.22
+                    p.animator().alphaValue = 1
+                })
+            }
         }
     }
 
