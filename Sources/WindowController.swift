@@ -304,7 +304,8 @@ final class WindowController: NSObject, NSWindowDelegate {
 
     private func scheduleIdleFade() {
         idleTimer?.invalidate()
-        let timer = Timer(timeInterval: Self.idleFadeSeconds, target: self,
+        let seconds = max(30, Store.shared.settings.idleFadeSeconds)
+        let timer = Timer(timeInterval: TimeInterval(seconds), target: self,
                           selector: #selector(idleFadeFired), userInfo: nil, repeats: false)
         RunLoop.main.add(timer, forMode: .common)
         idleTimer = timer

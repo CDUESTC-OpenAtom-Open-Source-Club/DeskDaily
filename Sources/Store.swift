@@ -96,8 +96,9 @@ struct AppSettings: Codable, Equatable {
     var statusBarIcon: Bool = false
     // 批次④：迷你胶囊折叠态（重启保持）
     var collapsed: Bool = false
-    // 闲置自动淡化（完整卡片 90 秒无操作 → 半透明）
+    // 闲置自动淡化（完整卡片无操作超时 → 半透明），时长可调（秒）
     var idleFade: Bool = true
+    var idleFadeSeconds: Int = 90
     // Dock 图标显示今日未完成数徽标
     var dockBadge: Bool = true
 
@@ -122,6 +123,7 @@ struct AppSettings: Codable, Equatable {
         statusBarIcon = try c.decodeIfPresent(Bool.self, forKey: .statusBarIcon) ?? false
         collapsed = try c.decodeIfPresent(Bool.self, forKey: .collapsed) ?? false
         idleFade = try c.decodeIfPresent(Bool.self, forKey: .idleFade) ?? true
+        idleFadeSeconds = try c.decodeIfPresent(Int.self, forKey: .idleFadeSeconds) ?? 90
         dockBadge = try c.decodeIfPresent(Bool.self, forKey: .dockBadge) ?? true
     }
 }

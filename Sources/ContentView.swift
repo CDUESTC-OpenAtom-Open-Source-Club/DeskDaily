@@ -1691,6 +1691,10 @@ struct SettingsView: View {
         NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
+    private func fadeDurationLabel(_ seconds: Int) -> String {
+        seconds >= 120 && seconds % 60 == 0 ? "\(seconds / 60) 分钟" : "\(seconds) 秒"
+    }
+
     private func pasteButton(_ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: "doc.on.clipboard")
@@ -1859,6 +1863,9 @@ struct SettingsView: View {
         .onChange(of: store.settings.idleFade) { on in
             WindowController.shared.idleFadeSettingChanged(on)
         }
+        .onChange(of: store.settings.idleFadeSeconds) { _ in
+            WindowController.shared.idleFadeSettingChanged(store.settings.idleFade)
+        }
         .confirmationDialog("确定要清空「\(store.activeSheetName)」的全部任务吗？此操作不可恢复。",
                             isPresented: $confirmClearAll, titleVisibility: .visible) {
             Button("清空所有任务", role: .destructive) { withDDAnimation { store.clearAll() } }
@@ -1967,10 +1974,22 @@ struct SettingsView: View {
                     .font(.system(size: 9.5))
                     .foregroundColor(.secondary)
                 Divider().opacity(0.5)
-                Toggle(isOn: $store.settings.idleFade) {
-                    Label("闲置时自动淡化", systemImage: "circle.lefthalf.filled")
+                HStack(spacing: 8) {
+                    Toggle(isOn: $store.settings.idleFade) {
+                        Label("闲置时自动淡化", systemImage: "circle.lefthalf.filled")
+                    }
+                    Spacer(minLength: 4)
+                    if store.settings.idleFade {
+                        Stepper(value: $store.settings.idleFadeSeconds, in: 30...600, step: 15) {
+                            Text(fadeDurationLabel(store.settings.idleFadeSeconds))
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundColor(Accent.start)
+                        }
+                        .fixedSize()
+                        .help("无操作多少秒后自动淡化（30–600 秒，步进 15）")
+                    }
                 }
-                Text("90 秒无悬停 / 操作时卡片自动半透明，鼠标一碰立即恢复；迷你胶囊不受影响。")
+                Text("超过设定时长无悬停 / 操作时卡片自动半透明，鼠标一碰立即恢复；迷你胶囊不受影响。")
                     .font(.system(size: 9.5))
                     .foregroundColor(.secondary)
                 Toggle(isOn: $store.settings.dockBadge) {
