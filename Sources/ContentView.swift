@@ -1788,266 +1788,63 @@ struct SettingsView: View {
         }
     }
 
+    enum SettingsTab: String, CaseIterable, Hashable {
+        case general = "通用"
+        case ai = "AI"
+        case data = "数据"
+    }
+
+    @State private var tab: SettingsTab = .general
+
+    /// 设置内容整体可滚动，且高度不超过屏幕，杜绝“底部看不见”
+    private var maxScrollHeight: CGFloat {
+        min(460, (NSScreen.main?.visibleFrame.height ?? 800) - 140)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 0) {
             Text("设置")
                 .font(.system(size: 14, weight: .bold))
-
-            GroupBox {
-                VStack(alignment: .leading, spacing: 8) {
-                    Picker("时区", selection: $store.settings.tzMode) {
-                        Text("跟随系统").tag(TZMode.system)
-                        Text("北京时间").tag(TZMode.beijing)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    Text("“今天”按此时区计算，跨 0 点自动刷新清单。")
-                        .font(.system(size: 10.5))
-                        .foregroundColor(.secondary)
+                .padding(.bottom, 10)
+            Picker("", selection: $tab) {
+                ForEach(SettingsTab.allCases, id: \.self) { item in
+                    Text(item.rawValue).tag(item)
                 }
-            } label: {
-                Label("时间与时区（\(store.tzLabel())）", systemImage: "globe")
             }
-
-            GroupBox {
-                VStack(alignment: .leading, spacing: 8) {
-                    Picker("显示", selection: $store.settings.windowMode) {
-                        Text("悬浮置顶").tag(WindowMode.floating)
-                        Text("贴附桌面").tag(WindowMode.desktop)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    Text("悬浮置顶：始终显示在最前，点击/滚动/拖动均正常（推荐）。贴附桌面：嵌入桌面层，部分 Mac 环境下可能无法点击（实验性）。")
-                        .font(.system(size: 10.5))
-                        .foregroundColor(.secondary)
-                }
-            } label: {
-                Label("窗口模式", systemImage: "macwindow")
-            }
-
-            GroupBox {
-                VStack(alignment: .leading, spacing: 8) {
-                    presetChips
-                    HStack(spacing: 6) {
-                        TextField("接口地址（chat/completions 完整 URL）", text: $store.settings.aiBaseURL)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(size: 11))
-                        pasteButton { store.settings.aiBaseURL = clipboardString() }
-                    }
-                    HStack(spacing: 6) {
-                        Group {
-                            if showAPIKey {
-                                TextField("API Key（本地模型可留空）", text: $store.settings.apiKey)
-                            } else {
-                                SecureField("API Key（本地模型可留空）", text: $store.settings.apiKey)
-                            }
-                        }
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 11))
-                        Button {
-                            showAPIKey.toggle()
-                        } label: {
-                            Image(systemName: showAPIKey ? "eye.slash" : "eye")
-                                .font(.system(size: 12))
-                                .foregroundColor(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                        .hoverPointing()
-                        .help(showAPIKey ? "隐藏 Key" : "显示 Key")
-                        pasteButton { store.settings.apiKey = clipboardString() }
-                    }
-                    HStack(spacing: 6) {
-                        TextField("模型名，如 glm-4.6", text: $store.settings.aiModel)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(size: 11))
-                        pasteButton { store.settings.aiModel = clipboardString() }
-                    }
-                    testButton
-                    if let testResult {
-                        Label(testResult, systemImage: testSuccess ? "checkmark.circle.fill" : "xmark.circle.fill")
-                            .font(.system(size: 10.5))
-                            .foregroundColor(testSuccess ? Color.green : Color.red)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .lineLimit(3)
-                    }
-                    Text("支持任意 OpenAI 兼容接口。智谱 https://api.z.ai/api/paas/v4/chat/completions；DeepSeek https://api.deepseek.com/chat/completions；本地 Ollama http://localhost:11434/v1/chat/completions。Key 只保存在本机。")
-                        .font(.system(size: 9.5))
-                        .foregroundColor(.secondary)
-                }
-            } label: {
-                Label("AI 助手", systemImage: "wand.and.stars")
-            }
-
-            GroupBox {
-                VStack(alignment: .leading, spacing: 8) {
-                    Toggle(isOn: $store.settings.memoryEnabled) {
-                        Label("自动从对话中积累记忆", systemImage: "brain.head.profile")
-                    }
-                    if store.memories.isEmpty {
-                        Text("暂无记忆。开启后，AI 会自动从 ✨ 对话中提取你的习惯与偏好，长期记住、越用越懂你。")
-                            .font(.system(size: 10.5))
-                            .foregroundColor(.secondary)
-                    } else {
-                        Text("已记住 \(store.memories.count) 条（规划时自动参考）")
-                            .font(.system(size: 10.5))
-                            .foregroundColor(.secondary)
-                        ScrollView(showsIndicators: true) {
-                            VStack(alignment: .leading, spacing: 5) {
-                                ForEach(store.memories) { memory in
-                                    HStack(spacing: 6) {
-                                        Text("· \(memory.content)")
-                                            .font(.system(size: 10.5))
-                                            .fixedSize(horizontal: false, vertical: true)
-                                        Spacer(minLength: 0)
-                                        Button {
-                                            store.deleteMemory(memory.id)
-                                        } label: {
-                                            Image(systemName: "xmark")
-                                                .font(.system(size: 8, weight: .bold))
-                                                .foregroundColor(.secondary.opacity(0.6))
-                                        }
-                                        .buttonStyle(.plain)
-                                    }
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .frame(maxHeight: 110)
-                        Button(role: .destructive) {
-                            store.clearMemories()
-                        } label: {
-                            Label("清空记忆", systemImage: "trash")
-                                .font(.system(size: 11))
-                        }
-                        .buttonStyle(.link)
-                    }
-                }
-            } label: {
-                Label("AI 记忆", systemImage: "brain.head.profile")
-            }
-
-            GroupBox {
-                VStack(alignment: .leading, spacing: 8) {
-                    Picker("进度环", selection: $store.settings.progressMode) {
-                        Text("完成数").tag(ProgressMode.count)
-                        Text("百分比").tag(ProgressMode.percent)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    Text("完成数显示已完成的任务数，百分比显示今日完成率；也可以直接点击卡片右上角的进度环切换。")
-                        .font(.system(size: 10.5))
-                        .foregroundColor(.secondary)
-                }
-            } label: {
-                Label("进度环显示", systemImage: "gauge")
-            }
-
-            GroupBox {
-                VStack(alignment: .leading, spacing: 8) {
-                    Toggle(isOn: $store.settings.notifOn) {
-                        Label("系统通知提醒", systemImage: "bell")
-                    }
-                    Toggle(isOn: $store.settings.soundOn) {
-                        Label("提醒音效", systemImage: "speaker.wave.2")
-                    }
-                    Divider().opacity(0.5)
-                    Toggle(isOn: reviewEnabled) {
-                        Label("AI 睡前复盘", systemImage: "moon.zzz")
-                    }
-                    if store.settings.reviewTime != nil {
-                        HStack(spacing: 8) {
-                            Text("复盘时间")
-                                .font(.system(size: 10.5))
-                                .foregroundColor(.secondary)
-                            reviewTimeMenus
-                            Spacer(minLength: 0)
-                        }
-                        Text("到点发通知提醒，点「开始复盘」会打开 AI 对话并自动汇总今日完成情况。需先在「AI 助手」里配置接口。")
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.bottom, 12)
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: 10) {
+                    switch tab {
+                    case .general:
+                        timeZoneGroup
+                        windowModeGroup
+                        progressGroup
+                        reminderGroup
+                        entryGroup
+                    case .ai:
+                        aiGroup
+                        memoryGroup
+                        reviewGroup
+                    case .data:
+                        maintenanceGroup
+                        backupGroup
+                        Text("DeskDaily v1.7 · 数据保存在本机\n~/Library/Application Support/DeskDaily/")
                             .font(.system(size: 9.5))
                             .foregroundColor(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .multilineTextAlignment(.center)
+                            .padding(.top, 2)
                     }
                 }
-            } label: {
-                Label("提醒方式", systemImage: "alarm")
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.bottom, 4)
             }
-
-            GroupBox {
-                VStack(alignment: .leading, spacing: 8) {
-                    Toggle(isOn: $store.settings.globalHotkey) {
-                        Label("全局热键 ⌥⇧D", systemImage: "keyboard")
-                    }
-                    Text("在任何应用里按 Option+Shift+D 都能显示 / 隐藏桌面卡片。")
-                        .font(.system(size: 9.5))
-                        .foregroundColor(.secondary)
-                    Toggle(isOn: $store.settings.statusBarIcon) {
-                        Label("菜单栏迷你入口", systemImage: "menubar.rectangle")
-                    }
-                    Text("在系统菜单栏显示清单图标：查看 / 勾选今日任务，不必唤出卡片。")
-                        .font(.system(size: 9.5))
-                        .foregroundColor(.secondary)
-                    Divider().opacity(0.5)
-                    Toggle(isOn: $store.settings.idleFade) {
-                        Label("闲置时自动淡化", systemImage: "circle.lefthalf.filled")
-                    }
-                    Text("90 秒无悬停 / 操作时卡片自动半透明，鼠标一碰立即恢复；迷你胶囊不受影响。")
-                        .font(.system(size: 9.5))
-                        .foregroundColor(.secondary)
-                    Toggle(isOn: $store.settings.dockBadge) {
-                        Label("Dock 图标显示未完成数", systemImage: "dock.rectangle")
-                    }
-                    Text("今日还有未完成任务时，Dock 图标角标实时显示数量，全部完成自动清空。")
-                        .font(.system(size: 9.5))
-                        .foregroundColor(.secondary)
-                    Divider().opacity(0.5)
-                    Toggle(isOn: $loginEnabled) {
-                        Label("登录时自动启动", systemImage: "power")
-                    }
-                    .onChange(of: loginEnabled) { on in
-                        if !LoginItem.set(on) { loginEnabled = false }
-                    }
-                    HStack {
-                        Button { withDDAnimation { store.resetToday() } } label: {
-                            Label("重置今日勾选", systemImage: "arrow.counterclockwise")
-                        }
-                        Spacer()
-                        Button { confirmClearAll = true } label: {
-                            Label("清空当前计划表…", systemImage: "trash")
-                        }
-                    }
-                    .buttonStyle(.link)
-                    .font(.system(size: 12))
-                    HStack {
-                        Button { exportBackup() } label: {
-                            Label("导出备份…", systemImage: "square.and.arrow.up")
-                        }
-                        Spacer()
-                        Button { importBackup() } label: {
-                            Label("导入备份…", systemImage: "square.and.arrow.down")
-                        }
-                    }
-                    .buttonStyle(.link)
-                    .font(.system(size: 12))
-                    Text("启动时自动备份当天数据（保留最近 7 份）到 Application Support/DeskDaily/backups/")
-                        .font(.system(size: 9.5))
-                        .foregroundColor(.secondary)
-                    if let backupMessage {
-                        Label(backupMessage, systemImage: backupError ? "xmark.circle.fill" : "checkmark.circle.fill")
-                            .font(.system(size: 10.5))
-                            .foregroundColor(backupError ? Color.red : Color.green)
-                    }
-                }
-            } label: {
-                Label("通用", systemImage: "gearshape")
-            }
-
-            Text("DeskDaily v1.7 · 数据保存在本机\n~/Library/Application Support/DeskDaily/")
-                .font(.system(size: 9.5))
-                .foregroundColor(.secondary)
-                .frame(maxWidth: .infinity, alignment: .center)
-                .multilineTextAlignment(.center)
+            .frame(maxHeight: maxScrollHeight)
         }
         .padding(16)
-        .frame(width: 310)
+        .frame(width: 320)
         .onAppear { loginEnabled = LoginItem.isEnabled }
         .onChange(of: store.settings.tzMode) { _ in store.refreshNow() }
         .onChange(of: store.settings.windowMode) { _ in
@@ -2077,6 +1874,305 @@ struct SettingsView: View {
                 backupMessage = "已导入备份并生效"
             }
             Button("取消", role: .cancel) { pendingImport = nil }
+        }
+    }
+
+    // MARK: 通用页分组
+
+    private var timeZoneGroup: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("时区", selection: $store.settings.tzMode) {
+                    Text("跟随系统").tag(TZMode.system)
+                    Text("北京时间").tag(TZMode.beijing)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                Text("“今天”按此时区计算，跨 0 点自动刷新清单。")
+                    .font(.system(size: 10.5))
+                    .foregroundColor(.secondary)
+            }
+        } label: {
+            Label("时间与时区（\(store.tzLabel())）", systemImage: "globe")
+        }
+    }
+
+    private var windowModeGroup: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("显示", selection: $store.settings.windowMode) {
+                    Text("悬浮置顶").tag(WindowMode.floating)
+                    Text("贴附桌面").tag(WindowMode.desktop)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                Text("悬浮置顶：始终显示在最前，点击/滚动/拖动均正常（推荐）。贴附桌面：嵌入桌面层，部分 Mac 环境下可能无法点击（实验性）。")
+                    .font(.system(size: 10.5))
+                    .foregroundColor(.secondary)
+            }
+        } label: {
+            Label("窗口模式", systemImage: "macwindow")
+        }
+    }
+
+    private var progressGroup: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("进度环", selection: $store.settings.progressMode) {
+                    Text("完成数").tag(ProgressMode.count)
+                    Text("百分比").tag(ProgressMode.percent)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                Text("完成数显示已完成的任务数，百分比显示今日完成率；也可以直接点击卡片右上角的进度环切换。")
+                    .font(.system(size: 10.5))
+                    .foregroundColor(.secondary)
+            }
+        } label: {
+            Label("进度环显示", systemImage: "gauge")
+        }
+    }
+
+    private var reminderGroup: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle(isOn: $store.settings.notifOn) {
+                    Label("系统通知提醒", systemImage: "bell")
+                }
+                Toggle(isOn: $store.settings.soundOn) {
+                    Label("提醒音效", systemImage: "speaker.wave.2")
+                }
+                Text("通知横幅上可直接点「✓完成 / 推迟10分钟」，无需切回卡片。")
+                    .font(.system(size: 9.5))
+                    .foregroundColor(.secondary)
+            }
+        } label: {
+            Label("提醒方式", systemImage: "alarm")
+        }
+    }
+
+    private var entryGroup: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle(isOn: $store.settings.globalHotkey) {
+                    Label("全局热键 ⌥⇧D", systemImage: "keyboard")
+                }
+                Text("在任何应用里按 Option+Shift+D 都能显示 / 隐藏桌面卡片。")
+                    .font(.system(size: 9.5))
+                    .foregroundColor(.secondary)
+                Toggle(isOn: $store.settings.statusBarIcon) {
+                    Label("菜单栏迷你入口", systemImage: "menubar.rectangle")
+                }
+                Text("在系统菜单栏显示清单图标：查看 / 勾选今日任务，不必唤出卡片。")
+                    .font(.system(size: 9.5))
+                    .foregroundColor(.secondary)
+                Divider().opacity(0.5)
+                Toggle(isOn: $store.settings.idleFade) {
+                    Label("闲置时自动淡化", systemImage: "circle.lefthalf.filled")
+                }
+                Text("90 秒无悬停 / 操作时卡片自动半透明，鼠标一碰立即恢复；迷你胶囊不受影响。")
+                    .font(.system(size: 9.5))
+                    .foregroundColor(.secondary)
+                Toggle(isOn: $store.settings.dockBadge) {
+                    Label("Dock 图标显示未完成数", systemImage: "dock.rectangle")
+                }
+                Text("今日还有未完成任务时，Dock 图标角标实时显示数量，全部完成自动清空。")
+                    .font(.system(size: 9.5))
+                    .foregroundColor(.secondary)
+                Divider().opacity(0.5)
+                Toggle(isOn: $loginEnabled) {
+                    Label("登录时自动启动", systemImage: "power")
+                }
+                .onChange(of: loginEnabled) { on in
+                    if !LoginItem.set(on) { loginEnabled = false }
+                }
+            }
+        } label: {
+            Label("入口与启动", systemImage: "slider.horizontal.3")
+        }
+    }
+
+    // MARK: AI 页分组
+
+    private var aiGroup: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                presetChips
+                HStack(spacing: 6) {
+                    TextField("接口地址（chat/completions 完整 URL）", text: $store.settings.aiBaseURL)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11))
+                    pasteButton { store.settings.aiBaseURL = clipboardString() }
+                }
+                HStack(spacing: 6) {
+                    Group {
+                        if showAPIKey {
+                            TextField("API Key（本地模型可留空）", text: $store.settings.apiKey)
+                        } else {
+                            SecureField("API Key（本地模型可留空）", text: $store.settings.apiKey)
+                        }
+                    }
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11))
+                    Button {
+                        showAPIKey.toggle()
+                    } label: {
+                        Image(systemName: showAPIKey ? "eye.slash" : "eye")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .hoverPointing()
+                    .help(showAPIKey ? "隐藏 Key" : "显示 Key")
+                    pasteButton { store.settings.apiKey = clipboardString() }
+                }
+                HStack(spacing: 6) {
+                    TextField("模型名，如 glm-4.6", text: $store.settings.aiModel)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11))
+                    pasteButton { store.settings.aiModel = clipboardString() }
+                }
+                testButton
+                if let testResult {
+                    Label(testResult, systemImage: testSuccess ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        .font(.system(size: 10.5))
+                        .foregroundColor(testSuccess ? Color.green : Color.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .lineLimit(3)
+                }
+                Text("支持任意 OpenAI 兼容接口。智谱 https://api.z.ai/api/paas/v4/chat/completions；DeepSeek https://api.deepseek.com/chat/completions；本地 Ollama http://localhost:11434/v1/chat/completions。Key 只保存在本机。")
+                    .font(.system(size: 9.5))
+                    .foregroundColor(.secondary)
+            }
+        } label: {
+            Label("AI 助手", systemImage: "wand.and.stars")
+        }
+    }
+
+    private var memoryGroup: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle(isOn: $store.settings.memoryEnabled) {
+                    Label("自动从对话中积累记忆", systemImage: "brain.head.profile")
+                }
+                if store.memories.isEmpty {
+                    Text("暂无记忆。开启后，AI 会自动从 ✨ 对话中提取你的习惯与偏好，长期记住、越用越懂你。")
+                        .font(.system(size: 10.5))
+                        .foregroundColor(.secondary)
+                } else {
+                    Text("已记住 \(store.memories.count) 条（规划时自动参考）")
+                        .font(.system(size: 10.5))
+                        .foregroundColor(.secondary)
+                    ScrollView(showsIndicators: true) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            ForEach(store.memories) { memory in
+                                HStack(spacing: 6) {
+                                    Text("· \(memory.content)")
+                                        .font(.system(size: 10.5))
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    Spacer(minLength: 0)
+                                    Button {
+                                        store.deleteMemory(memory.id)
+                                    } label: {
+                                        Image(systemName: "xmark")
+                                            .font(.system(size: 8, weight: .bold))
+                                            .foregroundColor(.secondary.opacity(0.6))
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 110)
+                    Button(role: .destructive) {
+                        store.clearMemories()
+                    } label: {
+                        Label("清空记忆", systemImage: "trash")
+                            .font(.system(size: 11))
+                    }
+                    .buttonStyle(.link)
+                }
+            }
+        } label: {
+            Label("AI 记忆", systemImage: "brain.head.profile")
+        }
+    }
+
+    private var reviewGroup: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle(isOn: reviewEnabled) {
+                    Label("AI 睡前复盘", systemImage: "moon.zzz")
+                }
+                if store.settings.reviewTime != nil {
+                    HStack(spacing: 8) {
+                        Text("复盘时间")
+                            .font(.system(size: 10.5))
+                            .foregroundColor(.secondary)
+                        reviewTimeMenus
+                        Spacer(minLength: 0)
+                    }
+                    Text("到点发通知提醒，点「开始复盘」会打开 AI 对话并自动汇总今日完成情况。需先在本页配置好 AI 接口。")
+                        .font(.system(size: 9.5))
+                        .foregroundColor(.secondary)
+                }
+            }
+        } label: {
+            Label("AI 睡前复盘", systemImage: "moon.zzz")
+        }
+    }
+
+    // MARK: 数据页分组
+
+    private var maintenanceGroup: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Button { withDDAnimation { store.resetToday() } } label: {
+                        Label("重置今日勾选", systemImage: "arrow.counterclockwise")
+                    }
+                    Spacer()
+                    Button { confirmClearAll = true } label: {
+                        Label("清空当前计划表…", systemImage: "trash")
+                    }
+                }
+                .buttonStyle(.link)
+                .font(.system(size: 12))
+                Text("重置只清今天的完成状态；清空会删除当前计划表的全部任务（可用 ⌘Z 撤销）。")
+                    .font(.system(size: 9.5))
+                    .foregroundColor(.secondary)
+            }
+        } label: {
+            Label("任务维护", systemImage: "checklist")
+        }
+    }
+
+    private var backupGroup: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Button { exportBackup() } label: {
+                        Label("导出备份…", systemImage: "square.and.arrow.up")
+                    }
+                    Spacer()
+                    Button { importBackup() } label: {
+                        Label("导入备份…", systemImage: "square.and.arrow.down")
+                    }
+                }
+                .buttonStyle(.link)
+                .font(.system(size: 12))
+                Text("启动时自动备份当天数据（保留最近 7 份）到 Application Support/DeskDaily/backups/")
+                    .font(.system(size: 9.5))
+                    .foregroundColor(.secondary)
+                if let backupMessage {
+                    Label(backupMessage, systemImage: backupError ? "xmark.circle.fill" : "checkmark.circle.fill")
+                        .font(.system(size: 10.5))
+                        .foregroundColor(backupError ? Color.red : Color.green)
+                }
+            }
+        } label: {
+            Label("备份与恢复", systemImage: "externaldrive")
         }
     }
 
