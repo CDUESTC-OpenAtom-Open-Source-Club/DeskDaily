@@ -88,6 +88,8 @@ struct AppSettings: Codable, Equatable {
     var memoryEnabled: Bool = true
     // v1.1 一次性迁移标记：老用户默认切换到悬浮置顶
     var migratedFloating: Bool = false
+    // AI 睡前复盘提醒时间（当天分钟数，如 22*60 表示 22:00；nil = 关闭）
+    var reviewTime: Int? = nil
 
     init() {}
 
@@ -105,6 +107,7 @@ struct AppSettings: Codable, Equatable {
         apiKey = try c.decodeIfPresent(String.self, forKey: .apiKey) ?? ""
         memoryEnabled = try c.decodeIfPresent(Bool.self, forKey: .memoryEnabled) ?? true
         migratedFloating = try c.decodeIfPresent(Bool.self, forKey: .migratedFloating) ?? false
+        reviewTime = try c.decodeIfPresent(Int.self, forKey: .reviewTime)
     }
 }
 
@@ -248,17 +251,25 @@ enum Notify {
     static let taskReminderCategory = "TASK_REMINDER"
     static let actionComplete = "COMPLETE"
     static let actionPostpone10 = "POSTPONE10"
+    // 睡前复盘通知分类：带「开始复盘」按钮
+    static let reviewCategory = "REVIEW_REMINDER"
+    static let actionStartReview = "START_REVIEW"
 
     /// 启动时注册分类（重复注册安全，系统以最后一次为准）
     static func registerCategories() {
         guard let center = center else { return }
         let complete = UNNotificationAction(identifier: actionComplete, title: "完成", options: [])
         let postpone = UNNotificationAction(identifier: actionPostpone10, title: "推迟10分钟", options: [])
-        let category = UNNotificationCategory(identifier: taskReminderCategory,
-                                              actions: [complete, postpone],
-                                              intentIdentifiers: [],
-                                              options: [])
-        center.setNotificationCategories([category])
+        let taskCategory = UNNotificationCategory(identifier: taskReminderCategory,
+                                                  actions: [complete, postpone],
+                                                  intentIdentifiers: [],
+                                                  options: [])
+        let startReview = UNNotificationAction(identifier: actionStartReview, title: "开始复盘", options: [])
+        let reviewCat = UNNotificationCategory(identifier: reviewCategory,
+                                               actions: [startReview],
+                                               intentIdentifiers: [],
+                                               options: [])
+        center.setNotificationCategories([taskCategory, reviewCat])
     }
 
     /// taskID/sheetID 齐备时挂上任务分类（可从通知直接完成/推迟）；「新的一天」等普通通知不带按钮
@@ -272,6 +283,19 @@ enum Notify {
             content.categoryIdentifier = taskReminderCategory
             content.userInfo = ["taskID": t, "sheetID": s]
         }
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        center.add(request)
+    }
+
+    /// 睡前复盘提醒：点击通知或「开始复盘」按钮都会打开 AI 复盘对话（userInfo 标记 open_review）
+    static func postReview() {
+        guard let center = center else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "🌙 该复盘了"
+        content.body = "今天过得怎么样？点「开始复盘」，让 AI 陪你回顾今天的完成情况"
+        content.sound = .default
+        content.categoryIdentifier = reviewCategory
+        content.userInfo = ["open_review": true]
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         center.add(request)
     }
@@ -300,6 +324,8 @@ final class Store: ObservableObject {
     @Published var lastDeleted: DeletedTaskInfo? = nil
 
     private var timerCancellable: AnyCancellable?
+    /// 睡前复盘当天已发过的标记（内存态，不持久化；跨天自动失效）
+    private var reviewFiredDay: String = ""
 
     // 测试用：把“现在”向前平移 N 分钟
     static var timeShift: TimeInterval = {
@@ -412,6 +438,7 @@ final class Store: ObservableObject {
             currentDay = d
         }
         checkReminders()
+        checkReviewReminder()
     }
 
     private func onTimer() {
@@ -426,6 +453,7 @@ final class Store: ObservableObject {
             persist()
         }
         checkReminders()
+        checkReviewReminder()
     }
 
     // MARK: 展示
@@ -690,6 +718,17 @@ final class Store: ObservableObject {
             Notify.post(title: title, body: body,
                         taskID: task.id.uuidString, sheetID: sheetID?.uuidString)
         }
+    }
+
+    // MARK: 睡前复盘提醒
+
+    /// AI 睡前复盘：到点发通知（每天最多一次；15 秒 tick 里检查）
+    private func checkReviewReminder() {
+        guard settings.notifOn, let reviewAt = settings.reviewTime,
+              reviewFiredDay != currentDay, nowMinutes >= reviewAt else { return }
+        reviewFiredDay = currentDay
+        if settings.soundOn { Sound.play() }
+        Notify.postReview()
     }
 
     // MARK: 长期记忆

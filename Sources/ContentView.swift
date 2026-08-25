@@ -184,6 +184,13 @@ struct ContentView: View {
     @State private var doneExpanded = false
     @State private var showUndoToast = false
     @State private var undoToastToken = 0
+    @State private var statsOpen = false
+    /// 睡前复盘通知打开时要自动发送的消息（nil = 无）
+    @State private var pendingReviewMessage: String? = nil
+    /// 全部完成庆祝：token 驱动粒子喷发，celebrationAt 记录完成时刻
+    @State private var celebrateToken = 0
+    @State private var celebrationAt: Date? = nil
+    @State private var ringPulse = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -236,6 +243,17 @@ struct ContentView: View {
             } else {
                 withDDAnimation { showUndoToast = false }
             }
+        }
+        .onChange(of: allDoneToday) { done in
+            // false → true 跳变时庆祝；应用启动时已全部完成不会触发
+            guard done else { return }
+            celebrateAllDone()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .deskDailyOpenReview)) { _ in
+            // 睡前复盘通知/按钮 → 打开 AI 对话并自动发送今日复盘汇总
+            activateApp()
+            pendingReviewMessage = store.todayReviewMessage()
+            aiOpen = true
         }
         .popover(isPresented: $settingsOpen, arrowEdge: .bottom) {
             SettingsView()
@@ -299,9 +317,26 @@ struct ContentView: View {
                 SheetEditorView(isNew: sheetEditorIsNew)
             }
             Spacer()
-            Text("\(store.visibleTasks.count) 项")
-                .font(.system(size: 10))
+            Button {
+                statsOpen = true
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "chart.bar.fill")
+                        .font(.system(size: 9, weight: .semibold))
+                    Text("\(store.visibleTasks.count) 项")
+                        .font(.system(size: 10, weight: .medium))
+                }
                 .foregroundColor(.secondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(Color.primary.opacity(0.05)))
+            }
+            .buttonStyle(.plain)
+            .hoverPointing()
+            .help("任务统计 · 26 周热力图 · 每周复盘")
+            .popover(isPresented: $statsOpen, arrowEdge: .bottom) {
+                StatisticsView()
+            }
         }
         .padding(.horizontal, 18)
         .padding(.bottom, 8)
@@ -333,6 +368,13 @@ struct ContentView: View {
             }
             Spacer(minLength: 6)
             progressRing(done: done, total: total)
+                .scaleEffect(ringPulse ? 1.16 : 1)
+                .overlay {
+                    // 全部完成时从环心喷出的彩色粒子（Reduce Motion 时自动跳过）
+                    CelebrationBurst(token: celebrateToken)
+                        .frame(width: 300, height: 220)
+                        .allowsHitTesting(false)
+                }
             Button {
                 activateApp()
                 aiOpen = true
@@ -347,7 +389,7 @@ struct ContentView: View {
             .hoverPointing()
             .help("AI 日程规划")
             .popover(isPresented: $aiOpen, arrowEdge: .bottom) {
-                ChatView()
+                ChatView(autoSend: $pendingReviewMessage)
             }
             Menu {
                 Button { activateApp(); settingsOpen = true } label: { Label("设置…", systemImage: "gearshape") }
@@ -405,6 +447,25 @@ struct ContentView: View {
 
     // MARK: - 任务列表（未完成在上；“现在”线插在定时未完成序列中；已完成折叠在底部）
 
+    /// 今日任务是否全部完成（total > 0 且 done == total）
+    private var allDoneToday: Bool {
+        let total = store.visibleTasks.count
+        return total > 0 && store.doneCount == total
+    }
+
+    /// 全部完成庆祝：记录时刻 + 进度环脉冲 + 粒子喷发 + 轻提示音
+    /// （Reduce Motion 时跳过脉冲和粒子，仅保留静态祝贺文案）
+    private func celebrateAllDone() {
+        celebrationAt = Date()
+        celebrateToken += 1
+        if store.settings.soundOn { Sound.play() }
+        guard !DDMotion.reduceMotion else { return }
+        withAnimation(.easeOut(duration: 0.16)) { ringPulse = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
+            withAnimation(.spring(response: 0.5, dampingFraction: 0.5)) { ringPulse = false }
+        }
+    }
+
     private var undoneTasks: [TaskItem] {
         store.visibleTasks.filter { !store.isDone($0) }
     }
@@ -437,6 +498,9 @@ struct ContentView: View {
             VStack(spacing: 2) {
                 if store.visibleTasks.isEmpty {
                     EmptyStateView()
+                }
+                if allDoneToday {
+                    AllDoneView(doneAt: celebrationAt)
                 }
                 ForEach(Array(undone.enumerated()), id: \.element.id) { idx, task in
                     if showLine && idx == lineIndex {
@@ -665,6 +729,126 @@ struct EmptyStateView: View {
     }
 }
 
+// MARK: - 全部完成的专属空状态（与普通空状态区分）
+
+struct AllDoneView: View {
+    let doneAt: Date?
+    @EnvironmentObject var store: Store
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 42, weight: .semibold))
+                .foregroundStyle(Accent.gradient)
+                .shadow(color: Accent.start.opacity(0.35), radius: 10, y: 2)
+            Text("今日全部完成！")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundColor(.primary.opacity(0.85))
+            if let doneAt {
+                Text("完成于 \(store.timeString(store.minutesFromDate(doneAt)))")
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundColor(.secondary)
+            }
+            Text("享受当下吧 🎉")
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 20)
+        .accessibilityLabel("今日任务已全部完成")
+    }
+}
+
+// MARK: - 全部完成庆祝粒子（Canvas + TimelineView，重力 + 随机初速，约 1.5s 消散）
+
+struct ConfettiParticle {
+    let angle: Double      // 初速方向（弧度）
+    let speed: Double      // 初速（pt/s）
+    let size: Double
+    let spin: Double       // 方块自转速度
+    let color: Color
+    let kind: Int          // 0 圆点 1 方块
+
+    static let gravity: Double = 320
+
+    /// 14-20 个主题色系粒子
+    static func burst() -> [ConfettiParticle] {
+        let colors: [Color] = [Accent.start, Accent.end, .orange, .yellow, .pink]
+        let count = Int.random(in: 14...20)
+        return (0..<count).map { _ in
+            ConfettiParticle(angle: Double.random(in: 0..<(Double.pi * 2)),
+                             speed: Double.random(in: 40...120),
+                             size: Double.random(in: 2.2...4.2),
+                             spin: Double.random(in: -6...6),
+                             color: colors.randomElement() ?? .orange,
+                             kind: Int.random(in: 0...1))
+        }
+    }
+}
+
+struct CelebrationBurst: View {
+    let token: Int
+    @State private var particles: [ConfettiParticle] = []
+    @State private var startedAt: Date? = nil
+    @State private var active = false
+    private let duration: Double = 1.5
+
+    var body: some View {
+        Group {
+            if active {
+                TimelineView(.animation) { timeline in
+                    burstCanvas(now: timeline.date)
+                }
+            }
+        }
+        .allowsHitTesting(false)
+        .onChange(of: token) { _ in start() }
+    }
+
+    private func burstCanvas(now: Date) -> some View {
+        Canvas { ctx, size in
+            draw(in: &ctx, size: size, now: now)
+        }
+    }
+
+    private func draw(in ctx: inout GraphicsContext, size: CGSize, now: Date) {
+        guard let start = startedAt else { return }
+        let t = now.timeIntervalSince(start)
+        guard t >= 0, t <= duration else { return }
+        let center = CGPoint(x: size.width / 2, y: size.height / 2)
+        let fade = t / duration
+        for p in particles {
+            ctx.opacity = 1 - fade
+            ctx.fill(particlePath(p, t: t, center: center, fade: fade), with: .color(p.color))
+        }
+    }
+
+    private func particlePath(_ p: ConfettiParticle, t: Double, center: CGPoint, fade: Double) -> Path {
+        let x = center.x + cos(p.angle) * p.speed * t
+        let y = center.y + sin(p.angle) * p.speed * t + 0.5 * ConfettiParticle.gravity * t * t
+        let radius = p.size * (1 - 0.3 * fade)
+        if p.kind == 0 {
+            return Path(ellipseIn: CGRect(x: x - radius, y: y - radius,
+                                          width: radius * 2, height: radius * 2))
+        }
+        let transform = CGAffineTransform(translationX: x, y: y).rotated(by: p.spin * t)
+        let base = Path(roundedRect: CGRect(x: -radius, y: -radius, width: radius * 2, height: radius * 2),
+                        cornerRadius: 1)
+        return base.applying(transform)
+    }
+
+    private func start() {
+        guard token > 0, !DDMotion.reduceMotion else { return }
+        particles = ConfettiParticle.burst()
+        startedAt = Date()
+        active = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.2) {
+            active = false
+            startedAt = nil
+        }
+    }
+}
+
 // MARK: - 任务行
 
 struct TaskRow: View {
@@ -792,12 +976,27 @@ struct TaskRow: View {
     }
 
     private var titleView: some View {
-        HStack(spacing: 6) {
+        let streakDays = task.repeatRule.kind == .once ? 0 : store.streak(of: task)
+        return HStack(spacing: 6) {
             Text(task.title)
                 .font(.system(size: 13.5, weight: done ? .regular : .medium))
                 .strikethrough(done, color: .secondary)
                 .foregroundColor(done ? .secondary : .primary)
                 .lineLimit(2)
+            if streakDays >= 2 {
+                HStack(spacing: 2) {
+                    Image(systemName: "flame.fill")
+                        .font(.system(size: 8.5, weight: .bold))
+                    Text("\(streakDays)")
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                }
+                .foregroundColor(.orange)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(Capsule().fill(Color.orange.opacity(0.14)))
+                .help("已连续坚持 \(streakDays) 天")
+            }
             if let badge = ruleBadge(task.repeatRule) {
                 Text(badge)
                     .font(.system(size: 9, weight: .semibold))
@@ -1242,6 +1441,22 @@ struct SettingsView: View {
                     Toggle(isOn: $store.settings.soundOn) {
                         Label("提醒音效", systemImage: "speaker.wave.2")
                     }
+                    Divider().opacity(0.5)
+                    Toggle(isOn: reviewEnabled) {
+                        Label("AI 睡前复盘", systemImage: "moon.zzz")
+                    }
+                    if store.settings.reviewTime != nil {
+                        HStack(spacing: 8) {
+                            Text("复盘时间")
+                                .font(.system(size: 10.5))
+                                .foregroundColor(.secondary)
+                            reviewTimeMenus
+                            Spacer(minLength: 0)
+                        }
+                        Text("到点发通知提醒，点「开始复盘」会打开 AI 对话并自动汇总今日完成情况。需先在「AI 助手」里配置接口。")
+                            .font(.system(size: 9.5))
+                            .foregroundColor(.secondary)
+                    }
                 }
             } label: {
                 Label("提醒方式", systemImage: "alarm")
@@ -1322,6 +1537,50 @@ struct SettingsView: View {
     }
 
     // MARK: 备份 / 恢复
+
+    // MARK: AI 睡前复盘（reviewTime nil = 关闭）
+
+    private var reviewEnabled: Binding<Bool> {
+        Binding(
+            get: { store.settings.reviewTime != nil },
+            set: { on in
+                store.settings.reviewTime = on ? (store.settings.reviewTime ?? 22 * 60) : nil
+            })
+    }
+
+    /// 紧凑版「时:分」菜单（与任务时间弹窗同款数字菜单交互）
+    private var reviewTimeMenus: some View {
+        let current = store.settings.reviewTime ?? 22 * 60
+        return HStack(spacing: 3) {
+            Menu {
+                ForEach(0..<24, id: \.self) { h in
+                    Button(String(format: "%02d 时", h)) {
+                        store.settings.reviewTime = h * 60 + current % 60
+                    }
+                }
+            } label: {
+                Text(String(format: "%02d 时", current / 60))
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .frame(width: 58)
+            }
+            .fixedSize()
+            Text(":")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundColor(.secondary)
+            Menu {
+                ForEach(0..<60, id: \.self) { m in
+                    Button(String(format: "%02d 分", m)) {
+                        store.settings.reviewTime = (current / 60) * 60 + m
+                    }
+                }
+            } label: {
+                Text(String(format: "%02d 分", current % 60))
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .frame(width: 58)
+            }
+            .fixedSize()
+        }
+    }
 
     private var backupStamp: String {
         let formatter = DateFormatter()
@@ -1409,6 +1668,8 @@ enum LoginItem {
 struct ChatView: View {
     @EnvironmentObject var store: Store
     @Environment(\.dismiss) private var dismiss
+    /// 睡前复盘通知打开时预填并自动发送的消息（发送后自动清空）
+    @Binding var autoSend: String?
     @State private var input = ""
     @State private var messages: [ChatMessage] = []
     @State private var isWaiting = false
@@ -1416,6 +1677,10 @@ struct ChatView: View {
     @State private var detectedTasks: [AITask] = []
     @State private var showNoTasksHint = false
     @State private var confirmReplace = false
+
+    init(autoSend: Binding<String?> = .constant(nil)) {
+        _autoSend = autoSend
+    }
 
     private var configured: Bool {
         !store.settings.aiBaseURL.trimmingCharacters(in: .whitespaces).isEmpty
@@ -1490,11 +1755,22 @@ struct ChatView: View {
             inputBar
         }
         .frame(width: 340, height: 460)
+        .onAppear(perform: autoSendPending)
+        .onChange(of: autoSend) { _ in autoSendPending() }
         .confirmationDialog("将用 AI 清单替换当前的 \(store.visibleTasks.count) 项任务，确定吗？",
                             isPresented: $confirmReplace, titleVisibility: .visible) {
             Button("替换为 \(detectedTasks.count) 项新任务", role: .destructive) { replaceToday() }
             Button("取消", role: .cancel) {}
         }
+    }
+
+    /// 有预填消息（复盘通知打开）时自动发送一次
+    private func autoSendPending() {
+        guard let message = autoSend, !message.isEmpty else { return }
+        autoSend = nil
+        guard configured, !isWaiting else { return }
+        input = message
+        send()
     }
 
     private var chatHeader: some View {
@@ -1567,7 +1843,8 @@ struct ChatView: View {
         let isUser = message.role == "user"
         HStack {
             if isUser { Spacer(minLength: 24) }
-            Text(message.content)
+            // 行内 Markdown 渲染（加粗/行内代码/链接等），解析失败自动降级纯文本
+            Text(markdownInline(message.content))
                 .font(.system(size: 12))
                 .foregroundColor(isUser ? .white : .primary)
                 .padding(.horizontal, 10)

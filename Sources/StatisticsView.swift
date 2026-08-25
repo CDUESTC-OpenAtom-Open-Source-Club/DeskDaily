@@ -1,0 +1,628 @@
+import SwiftUI
+
+// MARK: - 统计数据模型
+
+/// 热力图单日格子
+struct DayCell: Equatable {
+    let key: String        // yyyy-MM-dd
+    let total: Int         // 当天跨所有计划表的活跃任务数
+    let done: Int          // 当天已完成数
+    let isToday: Bool
+    let isFuture: Bool
+
+    /// 当天完成率（0...1；total 为 0 时无意义）
+    var rate: Double { total > 0 ? Double(done) / Double(total) : 0 }
+}
+
+/// 统计页一次性算好的快照（重计算全部集中在 Store，UI 只读结果）
+struct StatsSnapshot {
+    let todayKey: String
+    let totalCompletions: Int   // 累计完成次数（全部历史）
+    let weekDone: Int           // 本周（周一至今）完成数
+    let weekTotal: Int          // 本周活跃任务数
+    let longestStreak: Int      // 所有任务中最长的连续完成天数
+    let weeks: [[DayCell]]      // 每列一周（周一开头），最后一列含今天
+    let hasData: Bool
+
+    var weekRatePercent: Int? {
+        weekTotal > 0 ? Int((Double(weekDone) / Double(weekTotal) * 100).rounded()) : nil
+    }
+}
+
+// MARK: - Store 统计扩展
+
+extension Store {
+    // MARK: 日历辅助（dayKey 字符串加减天）
+
+    /// "yyyy-MM-dd" → 该日正午的 Date（取正午避免夏令时边界误差）
+    func date(fromDayKey key: String) -> Date? {
+        let parts = key.split(separator: "-")
+        guard parts.count == 3, let y = Int(parts[0]), let m = Int(parts[1]), let d = Int(parts[2]) else { return nil }
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = tz
+        var c = DateComponents()
+        c.year = y
+        c.month = m
+        c.day = d
+        c.hour = 12
+        return cal.date(from: c)
+    }
+
+    /// dayKey 加/减 N 天，越界或解析失败返回 nil
+    func dayKey(byAddingDays days: Int, toKey key: String) -> String? {
+        guard let base = date(fromDayKey: key) else { return nil }
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = tz
+        guard let shifted = cal.date(byAdding: .day, value: days, to: base) else { return nil }
+        return Store.dayKey(tz: tz, date: shifted)
+    }
+
+    /// dayKey 对应星期几（1=周日 … 7=周六，与 Calendar.weekday 一致）
+    func weekday(ofDayKey key: String) -> Int {
+        guard let date = date(fromDayKey: key) else { return 1 }
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = tz
+        return cal.component(.weekday, from: date)
+    }
+
+    /// "2026-08-24" → "8月24日"
+    func monthDayLabel(_ key: String) -> String {
+        let parts = key.split(separator: "-")
+        guard parts.count == 3, let m = Int(parts[1]), let d = Int(parts[2]) else { return key }
+        return "\(m)月\(d)日"
+    }
+
+    /// "2026-08-24" → "8/24"
+    func shortDayLabel(_ key: String) -> String {
+        let parts = key.split(separator: "-")
+        guard parts.count == 3, let m = Int(parts[1]), let d = Int(parts[2]) else { return key }
+        return "\(m)/\(d)"
+    }
+
+    /// 本周周一的 dayKey
+    func mondayKeyOfWeek() -> String {
+        let offset = (weekdayNow() + 5) % 7   // 周一=0 … 周日=6
+        return dayKey(byAddingDays: -offset, toKey: currentDay) ?? currentDay
+    }
+
+    /// 统计口径的"该天活跃"：重复规则命中，且该天不早于任务创建日
+    /// （只影响历史统计的公平性，不改 visibleTasks 的展示口径）
+    func wasActive(_ task: TaskItem, onDay key: String, weekday: Int) -> Bool {
+        guard task.repeatRule.isActive(on: key, weekday: weekday) else { return false }
+        return task.createdOn.isEmpty || task.createdOn <= key
+    }
+
+    /// 某天跨所有计划表的活跃任务数 / 已完成数
+    func dayCounts(key: String, weekday: Int) -> (total: Int, done: Int) {
+        var total = 0
+        var done = 0
+        for sheet in sheets {
+            for task in sheet.tasks {
+                guard wasActive(task, onDay: key, weekday: weekday) else { continue }
+                total += 1
+                if task.doneDays.contains(key) { done += 1 }
+            }
+        }
+        return (total, done)
+    }
+
+    // MARK: 连续打卡
+
+    /// 当前连续完成天数：今天已完成则含今天，否则从昨天起算；
+    /// 不活跃的日期跳过（不算断档），遇到"活跃但未完成"即停；once 任务 0/1 简单处理
+    func streak(of task: TaskItem) -> Int {
+        if task.repeatRule.kind == .once {
+            return task.doneDays.contains(task.repeatRule.date) ? 1 : 0
+        }
+        var count = 0
+        var key = currentDay
+        if task.doneDays.contains(key) { count = 1 }
+        var steps = 0
+        while steps < 800 {   // 防御上限，正常首个断档就会停
+            steps += 1
+            guard let prev = dayKey(byAddingDays: -1, toKey: key) else { break }
+            key = prev
+            if !task.createdOn.isEmpty, key < task.createdOn { break }
+            guard task.repeatRule.isActive(on: key, weekday: weekday(ofDayKey: key)) else { continue }
+            if task.doneDays.contains(key) {
+                count += 1
+            } else {
+                break
+            }
+        }
+        return count
+    }
+
+    /// 历史最佳连续完成天数（从首个完成日/创建日起逐日扫描）
+    func bestStreak(of task: TaskItem) -> Int {
+        if task.repeatRule.kind == .once {
+            return task.doneDays.contains(task.repeatRule.date) ? 1 : 0
+        }
+        guard let firstDone = task.doneDays.sorted().first else { return 0 }
+        var key = !task.createdOn.isEmpty && task.createdOn < firstDone ? task.createdOn : firstDone
+        var best = 0
+        var run = 0
+        var steps = 0
+        while key <= currentDay, steps < 4000 {
+            steps += 1
+            if task.repeatRule.isActive(on: key, weekday: weekday(ofDayKey: key)) {
+                if task.doneDays.contains(key) {
+                    run += 1
+                    if run > best { best = run }
+                } else {
+                    run = 0
+                }
+            }
+            guard let next = dayKey(byAddingDays: 1, toKey: key) else { break }
+            key = next
+        }
+        return best
+    }
+
+    // MARK: 快照与报告（重计算集中在这里，UI 只读）
+
+    /// 统计快照：三张卡片数字 + 最近 N 周热力图
+    func buildStatsSnapshot(weeks weekCount: Int = 26) -> StatsSnapshot {
+        let today = currentDay
+        let monday = mondayKeyOfWeek()
+        var columns: [[DayCell]] = []
+        var weekDone = 0
+        var weekTotal = 0
+        for w in 0..<max(weekCount, 1) {
+            // 第 0 列 = weekCount-1 周前的周一，最后一列 = 本周一（含今天与本周未来占位）
+            guard let weekStart = dayKey(byAddingDays: 7 * (w - weekCount + 1), toKey: monday) else { continue }
+            var column: [DayCell] = []
+            for d in 0..<7 {
+                guard let key = dayKey(byAddingDays: d, toKey: weekStart) else { continue }
+                if key > today {
+                    column.append(DayCell(key: key, total: 0, done: 0, isToday: false, isFuture: true))
+                } else {
+                    let counts = dayCounts(key: key, weekday: weekday(ofDayKey: key))
+                    column.append(DayCell(key: key, total: counts.total, done: counts.done,
+                                          isToday: key == today, isFuture: false))
+                    if key >= monday {
+                        weekTotal += counts.total
+                        weekDone += counts.done
+                    }
+                }
+            }
+            columns.append(column)
+        }
+        var totalCompletions = 0
+        var longest = 0
+        var taskCount = 0
+        for sheet in sheets {
+            for task in sheet.tasks {
+                taskCount += 1
+                totalCompletions += task.doneDays.filter { $0 <= today }.count
+                let best = bestStreak(of: task)
+                if best > longest { longest = best }
+            }
+        }
+        return StatsSnapshot(todayKey: today,
+                             totalCompletions: totalCompletions,
+                             weekDone: weekDone,
+                             weekTotal: weekTotal,
+                             longestStreak: longest,
+                             weeks: columns,
+                             hasData: taskCount > 0 || totalCompletions > 0)
+    }
+
+    /// 本地每周复盘报告（Markdown，纯本地拼字符串，不调 AI）
+    func weeklyReportMarkdown() -> String {
+        let monday = mondayKeyOfWeek()
+        let dayNames = [2: "一", 3: "二", 4: "三", 5: "四", 6: "五", 7: "六", 1: "日"]
+        var dayLines: [String] = []
+        var sumTotal = 0
+        var sumDone = 0
+        var key = monday
+        while key <= currentDay {
+            let weekday = weekday(ofDayKey: key)
+            let counts = dayCounts(key: key, weekday: weekday)
+            sumTotal += counts.total
+            sumDone += counts.done
+            let rate = counts.total > 0
+                ? "\(Int((Double(counts.done) / Double(counts.total) * 100).rounded()))%（\(counts.done)/\(counts.total)）"
+                : "无任务"
+            dayLines.append("- 周\(dayNames[weekday] ?? "") \(shortDayLabel(key))：\(rate)")
+            guard let next = dayKey(byAddingDays: 1, toKey: key) else { break }
+            key = next
+        }
+        var topTask: (name: String, count: Int)? = nil
+        var longestTask: (name: String, days: Int)? = nil
+        for sheet in sheets {
+            for task in sheet.tasks {
+                let weekHits = task.doneDays.filter { $0 >= monday && $0 <= currentDay }.count
+                if weekHits > (topTask?.count ?? 0) { topTask = (task.title, weekHits) }
+                let best = bestStreak(of: task)
+                if best > (longestTask?.days ?? 0) { longestTask = (task.title, best) }
+            }
+        }
+        var lines: [String] = []
+        lines.append("# DeskDaily 每周复盘（\(shortDayLabel(monday)) - \(shortDayLabel(currentDay))）")
+        lines.append("")
+        let weekPct = sumTotal > 0 ? Int((Double(sumDone) / Double(sumTotal) * 100).rounded()) : 0
+        lines.append("本周共完成 \(sumDone)/\(sumTotal) 项，完成率 \(weekPct)%。")
+        lines.append("")
+        lines.append("## 每日完成率")
+        lines.append(contentsOf: dayLines.isEmpty ? ["- 本周暂无记录"] : dayLines)
+        lines.append("")
+        lines.append("## 亮点")
+        if let top = topTask, top.count > 0 {
+            lines.append("- 打卡最多：「\(top.name)」本周完成 \(top.count) 次")
+        } else {
+            lines.append("- 本周暂无打卡记录")
+        }
+        if let longest = longestTask, longest.days > 0 {
+            lines.append("- 最长连胜：「\(longest.name)」连续 \(longest.days) 天")
+        } else {
+            lines.append("- 暂无连续打卡记录")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// 今日清单 Markdown（「导出今日 Markdown」用）
+    func todayMarkdown() -> String {
+        let header = dateHeader()
+        let tasks = visibleTasks
+        var lines: [String] = []
+        lines.append("# DeskDaily 今日清单（\(header.date) \(header.weekday)）")
+        lines.append("")
+        lines.append("计划表：\(activeSheetName)")
+        if tasks.isEmpty {
+            lines.append("")
+            lines.append("（今天还没有任务）")
+            return lines.joined(separator: "\n")
+        }
+        lines.append("")
+        for task in tasks {
+            let box = isDone(task) ? "x" : " "
+            let time = task.remindAt.map { "（\(timeString($0))）" } ?? ""
+            lines.append("- [\(box)] \(task.title)\(time)")
+        }
+        lines.append("")
+        let done = doneCount
+        let pct = Int((Double(done) / Double(tasks.count) * 100).rounded())
+        lines.append("> 今日完成 \(done)/\(tasks.count)（\(pct)%）")
+        return lines.joined(separator: "\n")
+    }
+
+    /// 睡前复盘：发给 AI 的开场消息（今日完成情况汇总，走 ChatView 的 systemPrompt）
+    func todayReviewMessage() -> String {
+        let tasks = visibleTasks
+        let done = tasks.filter { isDone($0) }
+        let undone = tasks.filter { !isDone($0) }
+        let pct = tasks.isEmpty ? 0 : Int((Double(done.count) / Double(tasks.count) * 100).rounded())
+        var lines: [String] = []
+        lines.append("请帮我复盘今天（\(monthDayLabel(currentDay))）：共 \(tasks.count) 项任务，已完成 \(done.count) 项，完成率 \(pct)%。")
+        if !done.isEmpty {
+            lines.append("已完成：" + done.map { "「\($0.title)」" }.joined(separator: "、"))
+        }
+        if !undone.isEmpty {
+            lines.append("未完成：" + undone.map { "「\($0.title)」" }.joined(separator: "、"))
+        }
+        lines.append("请简要点评我的今天：先肯定亮点，再给一条明天就能执行的小建议。")
+        return lines.joined(separator: "\n")
+    }
+}
+
+// MARK: - 简易 Markdown 渲染（行内语法 + 保留换行），失败降级纯文本
+
+func markdownInline(_ content: String) -> AttributedString {
+    var options = AttributedString.MarkdownParsingOptions()
+    options.interpretedSyntax = .inlineOnlyPreservingWhitespace
+    if let parsed = try? AttributedString(markdown: content, options: options) {
+        return parsed
+    }
+    return AttributedString(content)
+}
+
+// MARK: - 26 周热力图（列=周，行=周一…周日）
+
+struct HeatmapView: View {
+    let weeks: [[DayCell]]
+
+    private let cell: CGFloat = 10
+    private let gap: CGFloat = 2
+
+    /// 完成率 → 主题色五档透明度；无任务浅灰、未来日期更浅的占位灰
+    private func levelColor(_ day: DayCell) -> Color {
+        if day.isFuture { return Color.primary.opacity(0.04) }
+        if day.total == 0 { return Color.primary.opacity(0.07) }
+        let accent = Accent.start
+        switch day.rate {
+        case ..<0.001: return accent.opacity(0.14)
+        case 0.001...0.25: return accent.opacity(0.28)
+        case 0.25...0.5: return accent.opacity(0.46)
+        case 0.5...0.75: return accent.opacity(0.66)
+        default: return accent.opacity(0.9)
+        }
+    }
+
+    var body: some View {
+        Canvas { ctx, _ in
+            for (col, week) in weeks.enumerated() {
+                for (row, day) in week.enumerated() {
+                    let x = CGFloat(col) * (cell + gap)
+                    let y = CGFloat(row) * (cell + gap)
+                    let rect = CGRect(x: x, y: y, width: cell, height: cell)
+                    ctx.fill(Path(roundedRect: rect, cornerRadius: 2), with: .color(levelColor(day)))
+                    if day.isToday {
+                        let border = Path(roundedRect: rect.insetBy(dx: -1.5, dy: -1.5), cornerRadius: 3)
+                        ctx.stroke(border, with: .color(Accent.start.opacity(0.9)), lineWidth: 1.2)
+                    }
+                }
+            }
+        }
+        .frame(width: CGFloat(weeks.count) * (cell + gap) - gap,
+               height: 7 * (cell + gap) - gap)
+        .help("最近 \(weeks.count) 周完成热力图 · 颜色越深当天完成率越高")
+    }
+}
+
+// MARK: - 统计页（sheetBar 右端「N 项」弹出）
+
+struct StatisticsView: View {
+    @EnvironmentObject var store: Store
+    @State private var snapshot: StatsSnapshot? = nil
+    @State private var reportMarkdown: String? = nil
+    @State private var aiComment: String? = nil
+    @State private var aiWaiting = false
+    @State private var aiError: String? = nil
+    @State private var toast: String? = nil
+    @State private var toastToken = 0
+
+    private var aiConfigured: Bool {
+        !store.settings.aiBaseURL.trimmingCharacters(in: .whitespaces).isEmpty
+            && !store.settings.aiModel.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("统计")
+                    .font(.system(size: 14, weight: .bold))
+                if let s = snapshot, s.hasData {
+                    statCards(s)
+                    HeatmapView(weeks: s.weeks)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    legend
+                    Divider().opacity(0.6)
+                    reportSection
+                } else {
+                    VStack(spacing: 10) {
+                        Image(systemName: "chart.bar")
+                            .font(.system(size: 28))
+                            .foregroundStyle(Accent.gradient)
+                        Text("暂无统计数据")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.primary.opacity(0.75))
+                        Text("添加任务并完成后\n这里会出现你的热力图与周报")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 60)
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(width: 380, height: 420)
+        .overlay(alignment: .bottom) {
+            if let toast {
+                Label(toast, systemImage: "checkmark.circle.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.primary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Capsule().fill(.ultraThinMaterial))
+                    .shadow(color: .black.opacity(0.15), radius: 6, y: 2)
+                    .padding(.bottom, 12)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .onAppear { snapshot = store.buildStatsSnapshot() }
+        .onChange(of: store.sheets) { _ in snapshot = store.buildStatsSnapshot() }
+        .onChange(of: store.currentDay) { _ in snapshot = store.buildStatsSnapshot() }
+    }
+
+    // MARK: 三张统计卡片
+
+    private func statCards(_ s: StatsSnapshot) -> some View {
+        HStack(spacing: 8) {
+            statCard(value: "\(s.totalCompletions)", caption: "累计完成（次）")
+            statCard(value: s.weekRatePercent.map { "\($0)%" } ?? "–", caption: "本周完成率")
+            statCard(value: "\(s.longestStreak)", caption: "最长连胜（天）")
+        }
+    }
+
+    private func statCard(value: String, caption: String) -> some View {
+        VStack(spacing: 3) {
+            Text(value)
+                .font(.system(size: 19, weight: .bold, design: .rounded))
+                .foregroundStyle(Accent.gradient)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+            Text(caption)
+                .font(.system(size: 9.5))
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 9)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.05)))
+    }
+
+    // MARK: 图例
+
+    private var legend: some View {
+        HStack(spacing: 5) {
+            Text("少")
+                .font(.system(size: 9))
+                .foregroundColor(.secondary)
+            ForEach([0.14, 0.28, 0.46, 0.66, 0.9], id: \.self) { opacity in
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(Accent.start.opacity(opacity))
+                    .frame(width: 8, height: 8)
+            }
+            Text("多")
+                .font(.system(size: 9))
+                .foregroundColor(.secondary)
+            Spacer(minLength: 8)
+            Text("本页数据均来自本机记录")
+                .font(.system(size: 8.5))
+                .foregroundColor(.secondary.opacity(0.85))
+        }
+    }
+
+    // MARK: 每周复盘区
+
+    private var reportSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("每周复盘")
+                .font(.system(size: 12, weight: .bold))
+            HStack(spacing: 10) {
+                Button(action: generateReport) {
+                    Label("生成本周报告", systemImage: "doc.text.magnifyingglass")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .buttonStyle(.link)
+                .hoverPointing()
+                .help("本地汇总本周（周一至今）的完成率、打卡与连胜，生成 Markdown")
+                if aiConfigured {
+                    Button(action: runAIComment) {
+                        HStack(spacing: 4) {
+                            if aiWaiting {
+                                ProgressView().controlSize(.mini)
+                            } else {
+                                Image(systemName: "wand.and.stars")
+                            }
+                            Text(aiWaiting ? "AI 点评中…" : "AI 点评")
+                        }
+                        .font(.system(size: 11, weight: .semibold))
+                    }
+                    .buttonStyle(.link)
+                    .hoverPointing()
+                    .disabled(aiWaiting)
+                    .help("把本地周报发给已配置的模型，请它简短点评")
+                }
+                Spacer(minLength: 0)
+                Button(action: exportToday) {
+                    Label("导出今日 Markdown", systemImage: "square.and.arrow.up")
+                        .font(.system(size: 10.5))
+                }
+                .buttonStyle(.link)
+                .hoverPointing()
+                .help("把今日清单+完成情况生成 Markdown 并复制到剪贴板")
+            }
+            if let reportMarkdown {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(reportMarkdown)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(.primary.opacity(0.85))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                    HStack(spacing: 6) {
+                        Text("生成于 \(store.clockString()) · 纯本地汇总")
+                            .font(.system(size: 8.5))
+                            .foregroundColor(.secondary.opacity(0.8))
+                        Spacer(minLength: 0)
+                        Button {
+                            copyToClipboard(reportMarkdown)
+                            showToast("周报已复制到剪贴板")
+                        } label: {
+                            Label("复制", systemImage: "doc.on.doc")
+                                .font(.system(size: 10.5, weight: .semibold))
+                        }
+                        .buttonStyle(.link)
+                        .hoverPointing()
+                    }
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.05)))
+                .transition(.opacity)
+            }
+            if let aiError {
+                Label(aiError, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10.5))
+                    .foregroundColor(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let aiComment {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("AI 点评", systemImage: "wand.and.stars")
+                        .font(.system(size: 10.5, weight: .bold))
+                        .foregroundStyle(Accent.gradient)
+                    Text(markdownInline(aiComment))
+                        .font(.system(size: 11))
+                        .foregroundColor(.primary.opacity(0.9))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Accent.start.opacity(0.08)))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(Accent.end.opacity(0.3), lineWidth: 1)
+                )
+                .transition(.opacity)
+            }
+        }
+    }
+
+    // MARK: 动作
+
+    private func generateReport() {
+        withDDAnimation {
+            aiComment = nil
+            aiError = nil
+            reportMarkdown = store.weeklyReportMarkdown()
+        }
+    }
+
+    private func runAIComment() {
+        guard !aiWaiting else { return }
+        let report = reportMarkdown ?? store.weeklyReportMarkdown()
+        if reportMarkdown == nil { reportMarkdown = report }
+        aiWaiting = true
+        aiError = nil
+        aiComment = nil
+        let settings = store.settings
+        Task { @MainActor in
+            do {
+                let reply = try await AIClient.shared.chat(
+                    system: "你是复盘教练，简短点评3-5句，语气真诚，先肯定亮点再给一条可执行建议。",
+                    messages: [ChatMessage(role: "user", content: report)],
+                    settings: settings,
+                    timeout: 60)
+                withDDAnimation { aiComment = reply }
+            } catch {
+                aiError = "AI 点评失败：\(error.localizedDescription)"
+            }
+            aiWaiting = false
+        }
+    }
+
+    private func exportToday() {
+        copyToClipboard(store.todayMarkdown())
+        showToast("今日 Markdown 已复制到剪贴板")
+    }
+
+    private func copyToClipboard(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func showToast(_ message: String) {
+        withDDAnimation { toast = message }
+        toastToken += 1
+        let token = toastToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
+            guard toastToken == token else { return }
+            withDDAnimation { toast = nil }
+        }
+    }
+}

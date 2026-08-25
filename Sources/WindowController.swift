@@ -4,6 +4,8 @@ import CoreGraphics
 
 extension Notification.Name {
     static let deskDailyWindowModeChanged = Notification.Name("DeskDailyWindowModeChanged")
+    /// 睡前复盘通知/按钮 → 打开 AI 复盘对话
+    static let deskDailyOpenReview = Notification.Name("DeskDailyOpenReview")
 }
 
 final class WidgetPanel: NSPanel {

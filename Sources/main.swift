@@ -31,6 +31,13 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
                 }
             }
         }
+        // 睡前复盘：点「开始复盘」按钮或点开通知本体 → 打开 AI 复盘对话（ContentView 监听）
+        if (info["open_review"] as? Bool) == true,
+           action == Notify.actionStartReview || action == UNNotificationDefaultActionIdentifier {
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .deskDailyOpenReview, object: nil)
+            }
+        }
         completionHandler()
     }
 }
