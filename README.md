@@ -1,109 +1,180 @@
-# DeskDaily · 桌面日程清单
+# DeskDaily
 
-一个原生 SwiftUI 编写的 macOS 桌面小部件：贴在桌面的每日任务清单，到点提醒，跨天自动刷新。纯本地运行，无任何网络请求。
+原生 macOS 桌面日程清单应用，轻量、智能、高效。
 
-![架构](https://img.shields.io/badge/platform-macOS%2013%2B-arm64) ![语言](https://img.shields.io/badge/lang-SwiftUI-indigo)
+![Platform](https://img.shields.io/badge/platform-macOS%2013%2B-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Swift](https://img.shields.io/badge/swift-5-orange)
 
-## 功能
+## ✨ 特性
 
-- **多计划表**：顶部胶囊按钮切换当前执行的计划表（其余为备选）；每张表可自定义主题色（10 色调色板），切换时卡片整体换色；支持新建/重命名/删除
-- **重复规则**：任务支持 仅今天 / 每天 / 每周指定几（工作日、周末或自选任意组合），按所选时区的星期自动显示与提醒
-- **添加栏一步到位**：添加任务时可直接设 ⏰ 提醒时间和 🔄 重复规则，不必添加后再右键
-- **悬浮置顶**（默认）：始终显示在最前的小卡片，点击打勾、滚轮滚动、按住标题区拖动均正常，兼容性最佳
-- **贴附桌面**（实验性）：嵌入桌面层、只在回到桌面时可见；部分 Mac 环境下可能收不到点击，遇到请切回悬浮置顶
-- **AI 规划助手**：卡片右上角 ✨ 打开对话，告诉 AI 你今天的安排，它追问目标与空闲时段后生成带提醒时间的任务清单，一键替换/追加到今日列表
-- **AI 记忆**：对话记录自动保存可续聊；AI 自动从对话中提取你的习惯与偏好（长期记忆），之后每次规划自动参考，越用越懂你（⚙️ 设置 →「AI 记忆」可管理/清空/关闭）
-- **每日刷新**：勾选状态按"天"归档，跨过 0 点自动重置，历史保留在数据文件中
-- **连续打卡**：重复任务自动统计连续完成天数，坚持 ≥2 天标题旁亮 🔥 角标
-- **统计与热力图**：点任务栏右侧「N 项」打开统计页——累计完成 / 本周完成率 / 最长连胜三张卡片 + 最近 26 周完成率热力图，可一键生成 Markdown 周报（可选 AI 点评）、导出今日清单
-- **全部完成庆祝**：当天任务全部打勾时进度环脉冲 + 彩色粒子喷发 + 提示音，并展示"今日全部完成"专属祝贺卡
-- **AI 睡前复盘**：设置里开启后，到点通知提醒，点「开始复盘」自动打开 AI 对话并发送今日完成情况汇总，让 AI 帮你复盘
-- **迷你胶囊折叠**：双击顶部标题空白处，整卡收成 220×40 小胶囊（迷你进度环 + 完成数 + 下一件事摘要），再双击复原；折叠状态记忆，重启保持；专注进行中胶囊显示 ⏱ 倒计时，且仍可直接拖动
-- **边缘磁吸**：拖动卡片靠近屏幕边缘（24pt 内）松手，自动吸附贴边（留 8pt 缝隙）
-- **闲置淡化**：完整卡片 90 秒无悬停/操作自动降为半透明，鼠标一碰立即恢复（设置 → 通用可关；迷你胶囊不淡化）
-- **Dock 徽标**：Dock 图标实时显示今日未完成数，全部完成自动清空（设置 → 通用可关）
-- **时段冲突检测**：添加任务或修改提醒时间时，与既有任务时段重叠（无时长按 30 分钟计）会 toast 提示 + 相关任务时间胶囊黄色闪烁 2 秒，不阻塞创建
-- **优先级星标**：右键任务「★ 标记重要」，星标任务置顶显示（先于时间排序），行右缘亮小星
-- **时区二选一**：`跟随系统`（默认，自动读取电脑时区）/ `北京时间`（固定 Asia/Shanghai UTC+8），"今天"的边界按所选时区计算
-- **日程提醒**：任务可设定提醒时间（右键任务 → 设置提醒时间），到点弹系统通知 + 音效；过期 30 分钟以上不补发
-- **每天重复 / 仅今天**：添加栏的 🔄 按钮切换新任务类型；已有任务右键也能改
-- 进度环实时显示今日完成度；窗口高度随任务数自适应，可拖动、可调宽度
-- 支持开机自动启动（设置里开启）
+### 核心功能
+- **多计划表**：创建多个计划表（工作日、周末、项目），每张表可自定义主题色，切换时卡片整体换色
+- **智能重复规则**：支持 仅今天 / 每天 / 每周指定几（工作日、周末或自选组合）
+- **时段提醒**：设置任务时间 + 时长，开始和结束时各提醒一次；进行中的任务绿色高亮
+- **时区灵活**：跟随系统时区或固定北京时间，跨 0 点自动刷新
 
-## 使用
+### AI 智能助手 🤖
+- **自然语言添加**：输入框直接打 `明早9点开会 45分钟` 或 `周二健身`，智能解析
+- **AI 规划师**：对话生成今日清单（支持任意 OpenAI 兼容接口：智谱/DeepSeek/Ollama）
+- **AI 长期记忆**：自动从对话中积累你的习惯偏好，越用越懂你
+- **AI 睡前复盘**：每晚定时发通知，AI 拿着当日数据做点评
 
-已安装于 `~/Applications/DeskDaily.app`，双击即可运行。
+### 数据与习惯 📊
+- **连续打卡**：任务显示 🔥N 天打卡角标，最长连胜一目了然
+- **年度热力图**：GitHub 风格 26 周热力图，完成率可视化
+- **每周复盘报告**：本地汇总本周数据 + AI 点评，可复制分享
+- **全部完成庆祝**：今日任务全打勾时，进度环喷出主题色粒子 🎉
 
-- 应用有 **Dock 图标**：点 Dock 图标随时把卡片唤回最前；右键 Dock 图标可退出（或卡片右上角 ⚙️ → 退出）
-- **移动位置**：按住标题/空白区域拖动卡片；拖近屏幕边缘会自动磁吸贴边；列表长时用滚轮或双指滑动滚动
-- **迷你模式**：双击卡片顶部标题空白处折叠成小胶囊（再双击展开），只看进度和下一件事，桌面更清爽
-- **首次启动**会请求通知权限，请点"允许"，否则只有音效没有横幅
-- 默认预置了 5 条示例任务，可自行删除
-- 数据文件：`~/Library/Application Support/DeskDaily/data.json`（想备份/迁移，拷走这个文件即可）
+### 效率与体验 ⚡
+- **迷你折叠胶囊**：双击卡片头部折叠成小胶囊（进度 + 下一件事），屏幕占用降 90%
+- **全局热键 ⌥⇧D**：任何应用里一键显示 / 隐藏卡片
+- **菜单栏迷你入口**：系统菜单栏小图标，快速查看 / 勾选任务
+- **明天视图**：顶部「今天 | 明天」切换，提前规划明日安排
+- **番茄钟专注**：右键任务「开始专注」，顶部专注条实时倒计时
+- **日程模板库**：常用日程存为模板，一键套用新建计划表
 
-### 卸载
+### 细节打磨 ✨
+- **通知横幅操作按钮**：提醒通知自带「✓完成 / 推迟10分钟」，不用切回卡片
+- **撤销删除**：⌘Z 或底部 toast「撤销」恢复误删任务
+- **备份 / 恢复**：一键导出 / 导入 JSON 备份，每天自动滚动备份（保留 7 份）
+- **边缘磁吸**：拖到屏幕边缘自动吸附贴边
+- **闲置淡化**：可调时长（30–600 秒）无操作自动半透明，鼠标一碰恢复
+- **Dock 徽标**：图标角标实时显示今日未完成数
+- **时段冲突检测**：新增 / 修改时间时自动提示与其他任务重叠
+- **星标置顶**：重要任务加星，自动排序到最前
 
-```bash
-rm -rf ~/Applications/DeskDaily.app
-rm -rf ~/Library/Application\ Support/DeskDaily
-```
+## 📥 安装
 
-## AI 规划助手
+**系统要求**：macOS 13+（Apple Silicon）
 
-卡片右上角 **✨** 打开对话：告诉 AI 你今天要完成什么，它会简短追问（目标、空闲时段），最后输出结构化任务清单，点「添加到今天」一键导入（含提醒时间）。
+### 从 GitHub Release 安装（推荐）
 
-配置入口：⚙️ 设置 →「AI 助手」，填任意 OpenAI 兼容接口：
+1. 前往 [Releases](https://github.com/CDUESTC-OpenAtom-Open-Source-Club/DeskDaily/releases/latest) 下载最新版本
+2. 下载 `DeskDaily-macOS-arm64.dmg` 或 `DeskDaily-macOS-arm64.zip`
+3. **DMG 方式**：双击 DMG → 拖动 DeskDaily.app 到 Applications 文件夹
+4. **ZIP 方式**：解压 → 移动 DeskDaily.app 到 `~/Applications/` 或 `/Applications/`
+5. 首次打开：右键 → 打开（绕过 Gatekeeper），或在「系统设置 → 隐私与安全性」中允许
 
-| 提供方 | 接口地址（chat/completions 完整 URL） | 模型示例 |
-|---|---|---|
-| 智谱 GLM | `https://api.z.ai/api/paas/v4/chat/completions` | `glm-4.6` |
-| DeepSeek | `https://api.deepseek.com/chat/completions` | `deepseek-chat` |
-| 本地 Ollama | `http://localhost:11434/v1/chat/completions` | `qwen2.5:7b` |
-
-- API Key 只保存在本机 `data.json`，请求只发向你填写的接口地址
-- 本地 Ollama 无需 Key（`ollama serve` 后填地址即可），完全离线
-- 说明：macOS 不对第三方开放对话式 Siri，因此采用外接 API 方案；本机"零上云"可用 Ollama 替代
-
-## 开发
+### 从源码构建
 
 ```bash
-./build.sh          # 编译 + 生成图标 + 打包签名 → build/DeskDaily.app
+git clone https://github.com/CDUESTC-OpenAtom-Open-Source-Club/DeskDaily.git
+cd DeskDaily
+./build.sh
+# 构建产物位于 build/DeskDaily.app
+cp -R build/DeskDaily.app ~/Applications/
+open ~/Applications/DeskDaily.app
 ```
 
-无 Xcode 工程，直接用 CommandLineTools 的 `swiftc` 编译。图标由 `Scripts/make_icon.swift` 用 CoreGraphics 纯代码绘制。
+## 🚀 使用
 
-### 测试开关（环境变量）
+### 快速上手
 
-| 变量 | 作用 |
-|---|---|
-| `DD_TIME_SHIFT_MINUTES=N` | 把"现在"向前平移 N 分钟，用于模拟跨天/到点提醒 |
-| `DD_DATA_DIR=/path` | 覆盖数据目录，测试时不污染真实数据 |
+1. **首次启动**：点「允许」授予通知权限（提醒功能必需）
+2. **添加任务**：
+   - 常规方式：输入标题 → 点 ⏰ 设时间 → 点 🔄 选重复规则 → 回车
+   - 自然语言：直接打 `明早9点开会 45分钟`，自动解析时间与时长
+3. **勾选打卡**：点圆圈完成任务；连续打卡显示 🔥N 天角标
+4. **查看统计**：点顶部计划表栏右侧「N 项」→ 热力图 / 周报 / 导出
+5. **AI 规划**：点右上角 ✨ → 告诉 AI 今天安排 → 生成清单一键替换
 
-例：`DD_DATA_DIR=/tmp/t DD_TIME_SHIFT_MINUTES=1500 build/DeskDaily.app/Contents/MacOS/DeskDaily`
+### 快捷键
 
-## 更换图标
+| 快捷键 | 功能 |
+|--------|------|
+| **⌥⇧D** | 全局显示 / 隐藏卡片 |
+| **⌘N** | 聚焦添加输入框 |
+| **⌘Z** | 撤销删除 |
+| **Esc** | 关闭弹窗 |
+| **双击卡片头部** | 折叠 / 展开迷你胶囊 |
 
-1. 用下方提示词（或你自己的）在生图模型出一张 1024×1024 图
-2. 保存为 PNG 后生成 icns 并替换：
+### 高级功能
+
+**配置 AI（⚙️ 设置 → AI 标签页）**
+- **智谱 GLM**：点预设芯片自动填接口地址，只需补 API Key
+- **本地 Ollama**：先启动 Ollama.app 并拉取模型（如 `ollama pull qwen3:4b`），点预设芯片填好地址
+- 配置完点「测试连接」验证，成功后即可使用 ✨ AI 规划师
+
+**日程模板**
+- 计划表菜单 → 💾 存为模板：当前表所有任务存为模板
+- 📁 从模板新建：深拷贝模板创建新计划表，快速套用常用日程
+
+**多计划表**
+- 顶部胶囊按钮切换当前执行的表，其他表为备选
+- 任务 / 勾选 / 提醒各自独立，AI 规划和统计作用于当前表
+
+## 🛠 开发
+
+### 技术栈
+
+- **语言**：Swift 5
+- **UI**：SwiftUI（原生 macOS 组件）
+- **构建**：纯 `swiftc` 命令行编译（无 Xcode 工程）
+- **数据**：本地 JSON 存储（`~/Library/Application Support/DeskDaily/`）
+- **架构**：单文件 ContentView（~2700 行）+ 模块分离（Store / AI / 统计 / 状态栏）
+
+### 项目结构
+
+```
+DeskDaily/
+├── Sources/
+│   ├── main.swift              # 入口 + AppDelegate + 通知代理
+│   ├── ContentView.swift       # 主界面（卡片 / 设置 / AI 对话）
+│   ├── Store.swift             # 数据模型 + 持久化 + 提醒逻辑
+│   ├── WindowController.swift  # NSPanel 窗口控制器
+│   ├── AIAssistant.swift       # OpenAI 兼容接口 + 任务解析
+│   ├── StatisticsView.swift    # 统计页（热力图 / 周报）
+│   ├── QuickAdd.swift          # 自然语言解析
+│   ├── HotkeyManager.swift     # 全局热键 ⌥⇧D
+│   └── StatusBar.swift         # 菜单栏入口
+├── build.sh                    # 构建脚本（swiftc 一键编译）
+├── Info.plist                  # Bundle 配置
+├── .github/workflows/build.yml # GitHub Actions CI
+└── README.md
+```
+
+### 本地开发
 
 ```bash
-mkdir /tmp/icon.iconset
-for s in 16 32 128 256 512; do
-  sips -z $s $s 你的图.png --out /tmp/icon.iconset/icon_${s}x${s}.png >/dev/null
-  sips -z $((s*2)) $((s*2)) 你的图.png --out /tmp/icon.iconset/icon_${s}x${s}@2x.png >/dev/null
-done
-iconutil -c icns /tmp/icon.iconset -o /tmp/AppIcon.icns
-cp /tmp/AppIcon.icns ~/Applications/DeskDaily.app/Contents/Resources/AppIcon.icns
+# 1. 克隆仓库
+git clone https://github.com/CDUESTC-OpenAtom-Open-Source-Club/DeskDaily.git
+cd DeskDaily
+
+# 2. 编译（产物 build/DeskDaily.app）
+./build.sh
+
+# 3. 运行（开发调试）
+open build/DeskDaily.app
+
+# 4. 测试钩子（时间平移 / 隔离数据目录）
+DD_TIME_SHIFT_MINUTES=60 DD_DATA_DIR=/tmp/test-data build/DeskDaily.app/Contents/MacOS/DeskDaily
 ```
 
-3. 退出并重新打开应用即可（如 Finder 里没刷新，注销重登一次）。
+### 贡献指南
 
-### 图标 AI 生成提示词
+欢迎提交 Issue 和 Pull Request！
 
-中文（即梦/通义万相等）：
+- **Bug 报告**：请附上系统版本、复现步骤、日志（`~/Library/Application Support/DeskDaily/`）
+- **功能建议**：说明使用场景和预期行为
+- **代码贡献**：
+  1. Fork 仓库并创建功能分支
+  2. 保持代码风格一致（SwiftUI 声明式 + 注释说明意图）
+  3. 确保 `./build.sh` 零 error 编译通过
+  4. 数据兼容：新字段必须 `decodeIfPresent ?? 默认值`
+  5. 提交 PR 并描述改动与测试方法
 
-> 扁平现代风格的 macOS 应用图标，圆角正方形画布，柔和的靛蓝到紫罗兰渐变背景，画面中央是一张带柔和投影的白色圆角卡片，卡片上是简洁的待办清单插画：第一行前面是填满渐变色的圆形复选框、内有白色对勾，旁边是深灰色圆角短横线表示文字；第二行是空心圆圈和浅灰色横线；卡片右下角叠放一个白色圆形小闹钟徽章，指针为靛蓝色；整体干净优雅、有轻微光泽，无任何文字，居中构图，1024×1024
+## 📄 许可
 
-英文（Midjourney/DALL·E 等，可加 `--no text`）：
+MIT License © 2026 CDUESTC-OpenAtom-Open-Source-Club
 
-> modern flat macOS app icon, rounded square, soft indigo-to-violet gradient background, a white rounded checklist card floating in the center with soft shadow, first row has a gradient-filled circular checkbox with a bold white checkmark and a dark gray pill-shaped line, second row an empty outlined circle with a lighter gray pill line, small white clock badge with indigo hands overlapping the card's bottom-right corner, clean, elegant, subtle gloss, no text, centered, 1024x1024
+## 🙏 鸣谢
+
+- 设计灵感：Fantastical、Things、Linear
+- AI 能力：OpenAI 兼容生态（智谱 GLM / DeepSeek / Ollama）
+- 社区贡献者：[Contributors](https://github.com/CDUESTC-OpenAtom-Open-Source-Club/DeskDaily/graphs/contributors)
+
+---
+
+**开发者社团**：[成都电子科技大学 - 开放原子开源俱乐部](https://github.com/CDUESTC-OpenAtom-Open-Source-Club)
+
