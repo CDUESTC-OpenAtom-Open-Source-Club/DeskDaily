@@ -1,10 +1,31 @@
 # DeskDaily
 
-原生 macOS 桌面日程清单应用，轻量、智能、高效。
+原生 macOS 桌面日程清单：把今天的任务、提醒、专注和复盘放在一张可交互的小卡片里。
+
+<p align="center">
+  <img src="docs/assets/deskdaily-icon.png" alt="DeskDaily 应用图标：渐变背景上的清单卡片与时钟" width="180">
+</p>
+
+<p align="center">
+  <a href="https://github.com/CDUESTC-OpenAtom-Open-Source-Club/DeskDaily/releases/latest">下载最新版本</a> ·
+  <a href="docs/SHOWCASE.md">图文展示</a> ·
+  <a href="docs/TEMPLATES.md">学生与工作者模板</a> ·
+  <a href="docs/ROADMAP.md">后续路线图</a>
+</p>
 
 ![Platform](https://img.shields.io/badge/platform-macOS%2013%2B-blue)
+![Architecture](https://img.shields.io/badge/architecture-Apple%20Silicon-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Swift](https://img.shields.io/badge/swift-5-orange)
+
+> 当前仓库已提交应用图标作为视觉资产；真实运行截图会在干净演示环境制作后放入 [`docs/assets/screenshots/`](docs/assets/screenshots/)，不使用伪造截图。
+
+## 快速了解
+
+- **看产品**：从 [图文展示](docs/SHOWCASE.md) 按“添加 → 提醒 → AI → 统计”的工作流参观。
+- **直接安装**：从 [最新 Release](https://github.com/CDUESTC-OpenAtom-Open-Source-Club/DeskDaily/releases/latest) 下载 arm64 `.dmg` 或 `.zip`。
+- **看日程示例**：查看 [学生与工作者模板目录](docs/TEMPLATES.md)。
+- **看开发方向**：阅读 [后续路线图](docs/ROADMAP.md)，了解可靠性、交互和模板扩展计划。
 
 ## ✨ 特性
 
@@ -19,6 +40,7 @@
 - **AI 规划师**：对话生成今日清单（支持任意 OpenAI 兼容接口：智谱/DeepSeek/Ollama）
 - **AI 长期记忆**：自动从对话中积累你的习惯偏好，越用越懂你
 - **AI 睡前复盘**：每晚定时发通知，AI 拿着当日数据做点评
+- **图文展示**：查看 [访客图文导览](docs/SHOWCASE.md)、[学生与工作者模板](docs/TEMPLATES.md) 和 [后续路线图](docs/ROADMAP.md)
 
 ### 数据与习惯 📊
 - **连续打卡**：任务显示 🔥N 天打卡角标，最长连胜一目了然
@@ -94,9 +116,10 @@ open ~/Applications/DeskDaily.app
 **配置 AI（⚙️ 设置 → AI 标签页）**
 - **智谱 GLM**：点预设芯片自动填接口地址，只需补 API Key
 - **本地 Ollama**：先启动 Ollama.app 并拉取模型（如 `ollama pull qwen3:4b`），点预设芯片填好地址
-- 配置完点「测试连接」验证，成功后即可使用 ✨ AI 规划师
-
-**日程模板**
+- API Key 只保存在本机 `data.json`，但使用云端服务时，对话内容、当前任务和启用的记忆会发送到你填写的服务商
+- 本地 Ollama 无需 Key（`ollama serve` 后填地址即可），请求可以只留在本机
+- 发布截图、Issue 和备份前请确认没有真实密钥、私人日程或聊天记录
+- 说明：macOS 不对第三方开放对话式 Siri，因此采用外接 API 方案；升级到支持 Foundation Models 的系统后再评估接入苹果本机模型
 - 计划表菜单 → 💾 存为模板：当前表所有任务存为模板
 - 📁 从模板新建：深拷贝模板创建新计划表，快速套用常用日程
 
@@ -113,6 +136,7 @@ open ~/Applications/DeskDaily.app
 - **构建**：纯 `swiftc` 命令行编译（无 Xcode 工程）
 - **数据**：本地 JSON 存储（`~/Library/Application Support/DeskDaily/`）
 - **架构**：单文件 ContentView（~2700 行）+ 模块分离（Store / AI / 统计 / 状态栏）
+- **当前构建**：macOS 13+、Apple Silicon（arm64）；Intel Mac 暂无 universal 构建
 
 ### 项目结构
 
@@ -128,8 +152,9 @@ DeskDaily/
 │   ├── QuickAdd.swift          # 自然语言解析
 │   ├── HotkeyManager.swift     # 全局热键 ⌥⇧D
 │   └── StatusBar.swift         # 菜单栏入口
+├── Resources/
+│   └── Info.plist              # Bundle 配置
 ├── build.sh                    # 构建脚本（swiftc 一键编译）
-├── Info.plist                  # Bundle 配置
 ├── .github/workflows/build.yml # GitHub Actions CI
 └── README.md
 ```
