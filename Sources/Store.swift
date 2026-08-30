@@ -237,13 +237,14 @@ struct AppData: Codable {
     var lastSeenDay: String = ""
     var memories: [MemoryEntry] = []
     var chatHistory: [ChatMessage] = []
+    var chatDraft: String = ""
     // 计划表模板库（批次③）
     var templates: [PlanSheet] = []
 
     init() {}
 
     init(settings: AppSettings, sheets: [PlanSheet], activeSheetId: UUID?,
-         lastSeenDay: String, memories: [MemoryEntry], chatHistory: [ChatMessage],
+         lastSeenDay: String, memories: [MemoryEntry], chatHistory: [ChatMessage], chatDraft: String = "",
          templates: [PlanSheet] = [], schemaVersion: Int = AppDataValidator.currentSchemaVersion) {
         self.schemaVersion = schemaVersion
         self.settings = settings
@@ -252,6 +253,7 @@ struct AppData: Codable {
         self.lastSeenDay = lastSeenDay
         self.memories = memories
         self.chatHistory = chatHistory
+        self.chatDraft = chatDraft
         self.templates = templates
     }
 
@@ -274,6 +276,7 @@ struct AppData: Codable {
         lastSeenDay = try c.decodeIfPresent(String.self, forKey: .lastSeenDay) ?? ""
         memories = try c.decodeIfPresent([MemoryEntry].self, forKey: .memories) ?? []
         chatHistory = try c.decodeIfPresent([ChatMessage].self, forKey: .chatHistory) ?? []
+        chatDraft = try c.decodeIfPresent(String.self, forKey: .chatDraft) ?? ""
         templates = try c.decodeIfPresent([PlanSheet].self, forKey: .templates) ?? []
     }
 }
@@ -473,6 +476,7 @@ final class Store: ObservableObject {
     @Published var activeSheetId: UUID? { didSet { persist(); refreshDockBadge(); scheduleNotificationRefresh() } }
     @Published var memories: [MemoryEntry] { didSet { persist() } }
     @Published var chatHistory: [ChatMessage] { didSet { persist() } }
+    @Published var chatDraft: String { didSet { persist() } }
     @Published var templates: [PlanSheet] { didSet { persist(); scheduleNotificationRefresh() } }
     @Published var currentDay: String
     @Published var nowMinutes: Int
@@ -539,6 +543,7 @@ final class Store: ObservableObject {
             ?? resolvedSheets.first?.id
         memories = loaded.memories
         chatHistory = loaded.chatHistory
+        chatDraft = loaded.chatDraft
         templates = loaded.templates
         currentDay = ""
         nowMinutes = 0
@@ -1272,7 +1277,7 @@ final class Store: ObservableObject {
     func encodedSnapshot() -> Data? {
         let snapshot = AppData(settings: settings, sheets: sheets, activeSheetId: activeSheetId,
                                lastSeenDay: currentDay, memories: memories, chatHistory: chatHistory,
-                               templates: templates)
+                               chatDraft: chatDraft, templates: templates)
         do {
             let validated = try AppDataValidator.validate(snapshot)
             return try JSONEncoder().encode(validated)
@@ -1305,6 +1310,7 @@ final class Store: ObservableObject {
         activeSheetId = restoredData.activeSheetId ?? restored.first?.id
         memories = restoredData.memories
         chatHistory = restoredData.chatHistory
+        chatDraft = restoredData.chatDraft
         templates = restoredData.templates
         canPersist = true
         dataError = nil

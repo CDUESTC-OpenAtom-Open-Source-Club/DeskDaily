@@ -195,8 +195,6 @@ struct ContentView: View {
     @State private var newDuration: Int?
     @State private var showAddTime = false
     @State private var showAddRule = false
-    @State private var settingsOpen = false
-    @State private var aiOpen = false
     @State private var templateCatalogOpen = false
     @State private var showSheetEditor = false
     @State private var sheetEditorIsNew = true
@@ -205,8 +203,6 @@ struct ContentView: View {
     @State private var showUndoToast = false
     @State private var undoToastToken = 0
     @State private var statsOpen = false
-    /// 睡前复盘通知打开时要自动发送的消息（nil = 无）
-    @State private var pendingReviewMessage: String? = nil
     /// 全部完成庆祝：token 驱动粒子喷发，celebrationAt 记录完成时刻
     @State private var celebrateToken = 0
     @State private var celebrationAt: Date? = nil
@@ -300,10 +296,8 @@ struct ContentView: View {
             celebrateAllDone()
         }
         .onReceive(NotificationCenter.default.publisher(for: .deskDailyOpenReview)) { _ in
-            // 睡前复盘通知/按钮 → 打开 AI 对话并自动发送今日复盘汇总
-            activateApp()
-            pendingReviewMessage = store.todayReviewMessage()
-            aiOpen = true
+            // 常驻 AI 面板接住复盘内容；未配置时保留为草稿，不会静默丢失。
+            WindowController.shared.showAIPanel(autoSend: store.todayReviewMessage())
         }
         .onReceive(NotificationCenter.default.publisher(for: .deskDailyFocusAddField)) { _ in
             // 菜单「新任务 ⌘N」→ 聚焦添加输入框
@@ -314,9 +308,6 @@ struct ContentView: View {
             if let title = note.userInfo?["title"] as? String {
                 showInfoToast("⚠️ 与「\(title)」时间重叠")
             }
-        }
-        .popover(isPresented: $settingsOpen, arrowEdge: .bottom) {
-            SettingsView()
         }
         .confirmationDialog("确定删除计划表「\(store.activeSheetName)」及其所有任务吗？",
                             isPresented: $confirmDeleteSheet, titleVisibility: .visible) {
@@ -626,8 +617,7 @@ struct ContentView: View {
                         .allowsHitTesting(false)
                 }
             Button {
-                activateApp()
-                aiOpen = true
+                WindowController.shared.showAIPanel()
             } label: {
                 Image(systemName: "wand.and.stars")
                     .font(.system(size: 13, weight: .medium))
@@ -638,11 +628,8 @@ struct ContentView: View {
             .buttonStyle(.plain)
             .hoverPointing()
             .help("AI 日程规划")
-            .popover(isPresented: $aiOpen, arrowEdge: .bottom) {
-                ChatView(autoSend: $pendingReviewMessage)
-            }
             Menu {
-                Button { activateApp(); settingsOpen = true } label: { Label("设置…", systemImage: "gearshape") }
+                Button { WindowController.shared.showSettingsPanel() } label: { Label("设置…", systemImage: "gearshape") }
                 Button { store.resetToday() } label: { Label("重置今日勾选", systemImage: "arrow.counterclockwise") }
                 Divider()
                 Button(role: .destructive) { NSApp.terminate(nil) } label: { Label("退出 DeskDaily", systemImage: "power") }
@@ -1689,6 +1676,7 @@ struct AIProviderPreset: Identifiable {
 
 struct SettingsView: View {
     @EnvironmentObject var store: Store
+    let onClose: () -> Void
     @State private var loginEnabled = false
     @State private var confirmClearAll = false
     @State private var testing = false
@@ -1699,6 +1687,10 @@ struct SettingsView: View {
     @State private var confirmImport = false
     @State private var backupMessage: String?
     @State private var backupError = false
+
+    init(onClose: @escaping () -> Void = {}) {
+        self.onClose = onClose
+    }
 
     private var apiKeyBinding: Binding<String> {
         Binding(get: { store.apiKey }, set: { store.updateAPIKey($0) })
@@ -1825,9 +1817,19 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("设置")
-                .font(.system(size: 14, weight: .bold))
-                .padding(.bottom, 10)
+            HStack {
+                Text("设置")
+                    .font(.system(size: 14, weight: .bold))
+                Spacer()
+                Button(action: onClose) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 14))
+                        .foregroundColor(.secondary.opacity(0.65))
+                }
+                .buttonStyle(.plain)
+                .help("关闭设置")
+            }
+            .padding(.bottom, 10)
             Picker("", selection: $tab) {
                 ForEach(SettingsTab.allCases, id: \.self) { item in
                     Text(item.rawValue).tag(item)
@@ -2347,10 +2349,9 @@ enum LoginItem {
 
 struct ChatView: View {
     @EnvironmentObject var store: Store
+    @ObservedObject var session: ChatSession
     @Environment(\.dismiss) private var dismiss
-    /// 睡前复盘通知打开时预填并自动发送的消息（发送后自动清空）
-    @Binding var autoSend: String?
-    @State private var input = ""
+    let onClose: () -> Void
     @State private var messages: [ChatMessage] = []
     @State private var isWaiting = false
     @State private var aiStage = "正在连接模型…"
@@ -2360,8 +2361,9 @@ struct ChatView: View {
     @State private var showNoTasksHint = false
     @State private var confirmReplace = false
 
-    init(autoSend: Binding<String?> = .constant(nil)) {
-        _autoSend = autoSend
+    init(session: ChatSession, onClose: @escaping () -> Void = {}) {
+        self.session = session
+        self.onClose = onClose
     }
 
     private var configured: Bool {
@@ -2429,8 +2431,9 @@ struct ChatView: View {
                 .onChange(of: isWaiting) { _ in
                     withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
                 }
-                .onAppear(perform: restoreHistory)
-                .onChange(of: messages) { latest in
+        .onAppear(perform: restoreHistory)
+        .onReceive(session.$draft.dropFirst()) { store.chatDraft = $0 }
+        .onChange(of: messages) { latest in
                     store.chatHistory = Array(latest.suffix(40))
                 }
             }
@@ -2438,7 +2441,6 @@ struct ChatView: View {
         }
         .frame(width: 340, height: 460)
         .onAppear(perform: autoSendPending)
-        .onChange(of: autoSend) { _ in autoSendPending() }
         .confirmationDialog("将用 AI 候选替换当前 \(store.visibleTasks.filter { !store.isDone($0) }.count) 项未完成任务；\(store.visibleTasks.filter { store.isDone($0) }.count) 项已完成任务会保留。确定吗？",
                             isPresented: $confirmReplace, titleVisibility: .visible) {
             Button("替换为 \(selectedAIIDs.count) 项候选任务", role: .destructive) { replaceToday() }
@@ -2448,10 +2450,13 @@ struct ChatView: View {
 
     /// 有预填消息（复盘通知打开）时自动发送一次
     private func autoSendPending() {
-        guard let message = autoSend, !message.isEmpty else { return }
-        autoSend = nil
-        guard configured, !isWaiting else { return }
-        input = message
+        guard let message = session.pendingAutoSend, !message.isEmpty else { return }
+        guard configured, !isWaiting else {
+            session.draft = message
+            return
+        }
+        session.pendingAutoSend = nil
+        session.draft = message
         send()
     }
 
@@ -2472,7 +2477,8 @@ struct ChatView: View {
             }
             Spacer()
             Button {
-                messages = []
+                session.draft = ""
+                store.chatDraft = ""
                 store.chatHistory = []
             } label: {
                 Image(systemName: "plus.bubble")
@@ -2482,7 +2488,7 @@ struct ChatView: View {
             .buttonStyle(.plain)
             .help("开始新对话（长期记忆保留）")
             Button {
-                dismiss()
+                onClose()
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 14))
@@ -2623,7 +2629,7 @@ struct ChatView: View {
 
     private var inputBar: some View {
         HStack(spacing: 8) {
-            TextField(configured ? "告诉 AI 你今天的安排…" : "请先在设置中配置 AI 接口", text: $input)
+            TextField(configured ? "告诉 AI 你今天的安排…" : "请先在设置中配置 AI 接口", text: $session.draft)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 12))
                 .onSubmit(send)
@@ -2632,22 +2638,23 @@ struct ChatView: View {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.system(size: 17))
                     .foregroundStyle(
-                        input.trimmingCharacters(in: .whitespaces).isEmpty || !configured || isWaiting
+                        session.draft.trimmingCharacters(in: .whitespaces).isEmpty || !configured || isWaiting
                             ? AnyShapeStyle(Color.secondary.opacity(0.35))
                             : AnyShapeStyle(Accent.gradient)
                     )
             }
             .buttonStyle(.plain)
-            .disabled(input.trimmingCharacters(in: .whitespaces).isEmpty || !configured || isWaiting)
+            .disabled(session.draft.trimmingCharacters(in: .whitespaces).isEmpty || !configured || isWaiting)
             .help("发送")
         }
         .padding(12)
     }
 
     private func send() {
-        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = session.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, configured, !isWaiting else { return }
-        input = ""
+        session.draft = ""
+        store.chatDraft = ""
         messages.append(ChatMessage(role: "user", content: text))
         fetchReply()
     }

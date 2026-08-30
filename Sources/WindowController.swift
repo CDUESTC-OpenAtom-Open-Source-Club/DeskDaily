@@ -19,6 +19,9 @@ final class WidgetPanel: NSPanel {
 final class WindowController: NSObject, NSWindowDelegate {
     static let shared = WindowController()
     private var panel: WidgetPanel?
+    private var aiPanel: WidgetPanel?
+    private var settingsPanel: WidgetPanel?
+    let chatSession = ChatSession()
     private var isAnimatingFit = false
     private var fitTargetHeight: CGFloat = 0
 
@@ -95,6 +98,90 @@ final class WindowController: NSObject, NSWindowDelegate {
         ) { [weak self] _ in
             self?.applyWindowMode()
         }
+    }
+
+    // MARK: - 常驻辅助面板（AI / 设置）
+
+    private func makeAuxiliaryPanel(frame: NSRect) -> WidgetPanel {
+        let p = WidgetPanel(contentRect: frame,
+                            styleMask: [.nonactivatingPanel, .titled, .closable, .fullSizeContentView],
+                            backing: .buffered,
+                            defer: false)
+        p.isReleasedWhenClosed = false
+        p.titlebarAppearsTransparent = true
+        p.titleVisibility = .hidden
+        p.isOpaque = false
+        p.backgroundColor = .clear
+        p.hasShadow = true
+        p.hidesOnDeactivate = false
+        p.becomesKeyOnlyIfNeeded = false
+        p.level = Self.level(for: Store.shared.settings.windowMode)
+        p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+        p.delegate = self
+        return p
+    }
+
+    private func auxiliaryFrame(width: CGFloat, height: CGFloat) -> NSRect {
+        guard let main = panel else { return NSRect(x: 160, y: 160, width: width, height: height) }
+        let screen = main.screen ?? NSScreen.main
+        let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        var x = main.frame.maxX + 12
+        if x + width > visible.maxX { x = main.frame.minX - width - 12 }
+        if x < visible.minX { x = max(visible.minX + 12, main.frame.midX - width / 2) }
+        let y = min(max(main.frame.maxY - height, visible.minY + 12), visible.maxY - height - 12)
+        return NSRect(x: x, y: y, width: width, height: height)
+    }
+
+    func showAIPanel(autoSend: String? = nil) {
+        setup()
+        let store = Store.shared
+        if chatSession.draft.isEmpty { chatSession.draft = store.chatDraft }
+        if let autoSend, !autoSend.isEmpty { chatSession.pendingAutoSend = autoSend }
+        let p: WidgetPanel
+        if let existing = aiPanel {
+            p = existing
+        } else {
+            p = makeAuxiliaryPanel(frame: auxiliaryFrame(width: 360, height: 500))
+            p.contentView = NSHostingView(rootView: ChatView(session: chatSession, onClose: { [weak self] in
+                self?.hideAIPanel()
+            }).environmentObject(store))
+            aiPanel = p
+        }
+        p.level = Self.level(for: store.settings.windowMode)
+        p.orderFrontRegardless()
+        activateApp()
+        p.makeKey()
+    }
+
+    func hideAIPanel() {
+        storeChatDraft()
+        aiPanel?.orderOut(nil)
+    }
+
+    func showSettingsPanel() {
+        setup()
+        let store = Store.shared
+        let p: WidgetPanel
+        if let existing = settingsPanel {
+            p = existing
+        } else {
+            p = makeAuxiliaryPanel(frame: auxiliaryFrame(width: 330, height: 520))
+            p.contentView = NSHostingView(rootView: SettingsView(onClose: { [weak self] in
+                self?.hideSettingsPanel()
+            }).environmentObject(store))
+            settingsPanel = p
+        }
+        p.level = Self.level(for: store.settings.windowMode)
+        p.orderFrontRegardless()
+        activateApp()
+        p.makeKey()
+    }
+
+    func hideSettingsPanel() { settingsPanel?.orderOut(nil) }
+
+    private func storeChatDraft() {
+        let draft = chatSession.draft.trimmingCharacters(in: CharacterSet.newlines)
+        if Store.shared.chatDraft != draft { Store.shared.chatDraft = draft }
     }
 
     /// Dock 图标点击 / 重新打开应用时调用
@@ -245,6 +332,8 @@ final class WindowController: NSObject, NSWindowDelegate {
         p.orderOut(nil)
         p.level = new
         p.orderFrontRegardless()
+        aiPanel?.level = new
+        settingsPanel?.level = new
     }
 
     // MARK: - 屏幕边缘磁吸
@@ -341,6 +430,18 @@ final class WindowController: NSObject, NSWindowDelegate {
     }
 
     // MARK: - NSWindowDelegate
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if sender == aiPanel {
+            hideAIPanel()
+            return false
+        }
+        if sender == settingsPanel {
+            hideSettingsPanel()
+            return false
+        }
+        return true
+    }
 
     // 高度自适应 / 磁吸 / 形态动画期间不逐帧保存 frame，动画结束时统一保存
     func windowDidMove(_ notification: Notification) {
