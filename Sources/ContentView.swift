@@ -197,6 +197,7 @@ struct ContentView: View {
     @State private var showAddRule = false
     @State private var settingsOpen = false
     @State private var aiOpen = false
+    @State private var templateCatalogOpen = false
     @State private var showSheetEditor = false
     @State private var sheetEditorIsNew = true
     @State private var confirmDeleteSheet = false
@@ -470,7 +471,14 @@ struct ContentView: View {
                     Label("重命名 / 换颜色…", systemImage: "paintbrush")
                 }
                 Divider()
-                // 模板库
+                Button {
+                    activateApp()
+                    templateCatalogOpen = true
+                } label: {
+                    Label("浏览内置模板…", systemImage: "square.grid.2x2")
+                }
+                Divider()
+                // 用户模板库
                 Button {
                     store.saveCurrentAsTemplate()
                     showInfoToast("已存为模板「\(store.templates.last?.name ?? "")」")
@@ -530,6 +538,9 @@ struct ContentView: View {
             .fixedSize()
             .popover(isPresented: $showSheetEditor, arrowEdge: .bottom) {
                 SheetEditorView(isNew: sheetEditorIsNew)
+            }
+            .popover(isPresented: $templateCatalogOpen, arrowEdge: .bottom) {
+                TemplateCatalogView()
             }
             Spacer()
             Button {
@@ -2342,8 +2353,10 @@ struct ChatView: View {
     @State private var input = ""
     @State private var messages: [ChatMessage] = []
     @State private var isWaiting = false
+    @State private var aiStage = "正在连接模型…"
     @State private var errorMessage: String?
     @State private var detectedTasks: [AITask] = []
+    @State private var selectedAIIDs: Set<UUID> = []
     @State private var showNoTasksHint = false
     @State private var confirmReplace = false
 
@@ -2372,7 +2385,7 @@ struct ChatView: View {
                         if isWaiting {
                             HStack(spacing: 6) {
                                 ProgressView().controlSize(.small)
-                                Text("思考中…").font(.system(size: 11)).foregroundColor(.secondary)
+                                Text(aiStage).font(.system(size: 11)).foregroundColor(.secondary)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
@@ -2426,9 +2439,9 @@ struct ChatView: View {
         .frame(width: 340, height: 460)
         .onAppear(perform: autoSendPending)
         .onChange(of: autoSend) { _ in autoSendPending() }
-        .confirmationDialog("将用 AI 清单替换当前的 \(store.visibleTasks.count) 项任务，确定吗？",
+        .confirmationDialog("将用 AI 候选替换当前 \(store.visibleTasks.filter { !store.isDone($0) }.count) 项未完成任务；\(store.visibleTasks.filter { store.isDone($0) }.count) 项已完成任务会保留。确定吗？",
                             isPresented: $confirmReplace, titleVisibility: .visible) {
-            Button("替换为 \(detectedTasks.count) 项新任务", role: .destructive) { replaceToday() }
+            Button("替换为 \(selectedAIIDs.count) 项候选任务", role: .destructive) { replaceToday() }
             Button("取消", role: .cancel) {}
         }
     }
@@ -2529,60 +2542,83 @@ struct ChatView: View {
     }
 
     private var detectedCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("识别到 \(detectedTasks.count) 项 · 当前清单 \(store.visibleTasks.count) 项", systemImage: "checklist")
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(Accent.gradient)
-            ForEach(detectedTasks) { task in
-                HStack(spacing: 6) {
-                    Image(systemName: "circle.dotted")
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                    Text(task.title)
-                        .font(.system(size: 11))
-                    Spacer()
-                    if let time = task.remindAt {
-                        let end = task.durationMinutes.map { duration in
-                            store.timeString(((AIClient.minutes(fromHHMM: time) ?? 0) + duration) % 1440)
-                        }
-                        Text(end.map { "\(time)-\($0)" } ?? time)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundColor(.secondary)
-                    }
+        let selected = detectedTasks.filter { selectedAIIDs.contains($0.id) }
+        let completed = store.visibleTasks.filter { store.isDone($0) }
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("候选计划 · 已选 \(selected.count)/\(detectedTasks.count)", systemImage: "checklist")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Accent.gradient)
+                Spacer()
+                Button(selected.count == detectedTasks.count ? "全不选" : "全选") {
+                    selectedAIIDs = selected.count == detectedTasks.count ? [] : Set(detectedTasks.map(\.id))
                 }
+                .buttonStyle(.link)
+                .font(.system(size: 10))
+            }
+            Text(completed.isEmpty
+                 ? "AI 只会应用你勾选的候选任务。"
+                 : "当前已有 \(completed.count) 项已完成任务，整表替换不会删除它们。")
+                .font(.system(size: 9.5))
+                .foregroundColor(.secondary)
+            ForEach(detectedTasks) { task in
+                let isSelected = selectedAIIDs.contains(task.id)
+                Button {
+                    if isSelected { selectedAIIDs.remove(task.id) } else { selectedAIIDs.insert(task.id) }
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 14))
+                            .foregroundColor(isSelected ? Accent.start : .secondary.opacity(0.55))
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(task.title).font(.system(size: 11.5, weight: .medium)).lineLimit(1)
+                            if task.repeatDaily {
+                                Text("每天重复").font(.system(size: 9)).foregroundColor(.secondary)
+                            }
+                        }
+                        Spacer()
+                        if let time = task.remindAt {
+                            let end = task.durationMinutes.flatMap { duration in
+                                AIClient.minutes(fromHHMM: time).map { store.timeString($0 + duration) }
+                            }
+                            Text(end.map { "\(time)-\($0)" } ?? time)
+                                .font(.system(size: 9.5, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 5)
+                    .background(RoundedRectangle(cornerRadius: 7).fill(isSelected ? Accent.start.opacity(0.08) : Color.primary.opacity(0.035)))
+                }
+                .buttonStyle(.plain)
+                .hoverPointing()
             }
             HStack(spacing: 10) {
-                Button(action: requestReplaceToday) {
-                    Label("替换今日清单", systemImage: "arrow.triangle.2.circlepath.circle.fill")
+                Button(action: applySelectedAI) {
+                    Label("应用选中", systemImage: "checkmark.circle.fill")
                         .font(.system(size: 11, weight: .semibold))
                 }
                 .buttonStyle(.link)
-                .help("覆盖当前全部任务，以这份新清单为准")
-                Button(action: appendToday) {
-                    Label("追加", systemImage: "plus.circle")
+                .disabled(selected.isEmpty)
+                Button(action: requestReplaceToday) {
+                    Label("替换未完成项", systemImage: "arrow.triangle.2.circlepath.circle")
                         .font(.system(size: 10.5))
                 }
                 .buttonStyle(.link)
-                .help("保留现有任务，把这份清单追加到今天")
+                .disabled(selected.isEmpty)
+                .help("保留已完成任务，用选中候选替换当前未完成任务")
                 Button(role: .destructive) {
                     detectedTasks = []
+                    selectedAIIDs = []
                 } label: {
-                    Text("忽略")
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
+                    Text("忽略").font(.system(size: 10)).foregroundColor(.secondary)
                 }
                 .buttonStyle(.link)
             }
         }
         .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.primary.opacity(0.05))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Accent.end.opacity(0.35), lineWidth: 1)
-        )
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(0.05)))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Accent.end.opacity(0.35), lineWidth: 1))
     }
 
     private var inputBar: some View {
@@ -2624,6 +2660,7 @@ struct ChatView: View {
 
     private func fetchReply() {
         isWaiting = true
+        aiStage = "正在连接模型…"
         errorMessage = nil
         // 新请求不能留下上一轮可点击的候选，避免误应用旧清单。
         detectedTasks = []
@@ -2636,7 +2673,9 @@ struct ChatView: View {
                 let reply = try await AIClient.shared.chat(system: system, messages: history, settings: settings,
                                                             apiKey: store.apiKey)
                 messages.append(ChatMessage(role: "assistant", content: reply))
+                aiStage = "正在解析候选任务…"
                 detectedTasks = AIClient.parseTasks(from: reply)
+                selectedAIIDs = Set(detectedTasks.map(\.id))
                 showNoTasksHint = detectedTasks.isEmpty
                 isWaiting = false
                 if store.settings.memoryEnabled {
@@ -2693,39 +2732,55 @@ struct ChatView: View {
         fetchReply()
     }
 
-    /// 当前任务较多时先弹确认，避免误触整表覆盖
     private func requestReplaceToday() {
-        if store.visibleTasks.count >= 3 {
-            confirmReplace = true
-        } else {
-            replaceToday()
+        guard !selectedAIIDs.isEmpty else {
+            errorMessage = "请至少选择一项候选任务"
+            return
+        }
+        confirmReplace = true
+    }
+
+    private func selectedAIPayload() -> [(title: String, repeatDaily: Bool, remindAt: Int?, duration: Int?)] {
+        detectedTasks.filter { selectedAIIDs.contains($0.id) }.map {
+            (title: $0.title,
+             repeatDaily: $0.repeatDaily,
+             remindAt: $0.remindAt.flatMap { AIClient.minutes(fromHHMM: $0) },
+             duration: $0.durationMinutes)
         }
     }
 
-    /// 用 AI 的新清单整体覆盖今天
+    /// 保留今天已完成任务，用选中候选替换未完成项。
     private func replaceToday() {
         withDDAnimation {
-            store.replaceAll(with: detectedTasks.map {
-                (title: $0.title,
-                 repeatDaily: $0.repeatDaily,
-                 remindAt: $0.remindAt.flatMap { AIClient.minutes(fromHHMM: $0) },
-                 duration: $0.durationMinutes)
-            })
+            store.replaceUnfinished(with: selectedAIPayload(), preserveCompleted: true)
         }
-        detectedTasks = []
+        if store.lastOperationError == nil {
+            detectedTasks = []
+            selectedAIIDs = []
+        } else {
+            errorMessage = store.lastOperationError
+        }
     }
 
-    /// 在现有任务后追加
-    private func appendToday() {
+    /// 应用选中候选：只追加，不改现有任务。
+    private func applySelectedAI() {
         withDDAnimation {
-            for task in detectedTasks {
+            for task in detectedTasks where selectedAIIDs.contains(task.id) {
                 let minutes = task.remindAt.flatMap { AIClient.minutes(fromHHMM: $0) }
                 let rule = task.repeatDaily ? RepeatRule() : RepeatRule.once(date: store.currentDay)
                 store.addTask(title: task.title, rule: rule, remindAt: minutes, duration: task.durationMinutes)
             }
         }
-        detectedTasks = []
+        if store.lastOperationError == nil {
+            detectedTasks = []
+            selectedAIIDs = []
+        } else {
+            errorMessage = store.lastOperationError
+        }
     }
+
+    /// 兼容旧入口：追加当前选中候选。
+    private func appendToday() { applySelectedAI() }
 
     private var systemPrompt: String {
         let header = store.dateHeader()

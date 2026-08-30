@@ -1041,8 +1041,14 @@ final class Store: ObservableObject {
         }
     }
 
-    /// 用 AI 生成的清单整体覆盖当前计划表
+    /// 用 AI 生成的清单整体覆盖当前计划表（兼容旧调用）。
     func replaceAll(with newTasks: [(title: String, repeatDaily: Bool, remindAt: Int?, duration: Int?)]) {
+        replaceUnfinished(with: newTasks, preserveCompleted: false)
+    }
+
+    /// AI 安全应用：默认保留今天已经完成的任务，仅替换未完成项。
+    func replaceUnfinished(with newTasks: [(title: String, repeatDaily: Bool, remindAt: Int?, duration: Int?)],
+                           preserveCompleted: Bool = true) {
         var items: [TaskItem] = []
         do {
             for task in newTasks {
@@ -1055,16 +1061,17 @@ final class Store: ObservableObject {
                                       repeatRule: rule, createdOn: currentDay))
             }
             guard !items.isEmpty else {
-                lastOperationError = "没有可替换的有效任务"
+                lastOperationError = "没有可应用的有效任务"
                 return
             }
             guard let active = activeSheet else { return }
             var candidate = active
-            candidate.tasks = items
+            let completed = preserveCompleted ? active.tasks.filter { $0.doneDays.contains(currentDay) } : []
+            candidate.tasks = completed + items
             _ = try AppDataValidator.validate(AppData(settings: settings, sheets: sheets.map { $0.id == active.id ? candidate : $0 },
                                                        activeSheetId: activeSheetId, lastSeenDay: currentDay,
                                                        memories: memories, chatHistory: chatHistory, templates: templates))
-            mutateActiveTasks { $0 = items }
+            mutateActiveTasks { $0 = candidate.tasks }
         } catch {
             lastOperationError = error.localizedDescription
         }
