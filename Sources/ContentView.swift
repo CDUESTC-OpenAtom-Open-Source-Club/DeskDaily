@@ -1417,10 +1417,12 @@ struct TaskRow: View {
         .background(
             Capsule().fill(timeChipFill)
         )
-        // 冲突期间黄色闪烁（autoreverse 循环），2 秒后恢复常规配色
-        .animation(timeConflictFlashing
-                   ? Animation.easeInOut(duration: 0.28).repeatForever(autoreverses: true)
-                   : .easeInOut(duration: 0.2),
+        // Reduce Motion 下保留静态黄色提示，避免持续闪烁造成干扰
+        .animation(DDMotion.reduceMotion
+                   ? .easeInOut(duration: 0.15)
+                   : (timeConflictFlashing
+                      ? Animation.easeInOut(duration: 0.28).repeatForever(autoreverses: true)
+                      : .easeInOut(duration: 0.2)),
                    value: timeConflictFlashing)
         .foregroundColor(inPeriod ? .green : (isOverdue ? .red : .secondary))
         .hoverPointing()
@@ -1687,6 +1689,10 @@ struct SettingsView: View {
     @State private var backupMessage: String?
     @State private var backupError = false
 
+    private var apiKeyBinding: Binding<String> {
+        Binding(get: { store.apiKey }, set: { store.updateAPIKey($0) })
+    }
+
     private func clipboardString() -> String {
         NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
@@ -1744,6 +1750,7 @@ struct SettingsView: View {
                     system: "You are a connection test.",
                     messages: [ChatMessage(role: "user", content: "请只回复四个字：连接成功")],
                     settings: settings,
+                    apiKey: store.apiKey,
                     timeout: 20)
                 let ms = Int(Date().timeIntervalSince(start) * 1000)
                 testSuccess = true
@@ -1874,11 +1881,14 @@ struct SettingsView: View {
         .confirmationDialog(importConfirmText, isPresented: $confirmImport, titleVisibility: .visible) {
             Button("覆盖并导入", role: .destructive) {
                 if let data = pendingImport {
-                    withDDAnimation { store.restoreAll(from: data) }
+                    let restored = withDDAnimation { store.restoreAll(from: data) }
+                    backupError = !restored
+                    backupMessage = restored ? "已导入备份并生效" : (store.lastOperationError ?? "导入失败")
                 }
                 pendingImport = nil
-                backupError = false
-                backupMessage = "已导入备份并生效"
+                if backupMessage == "已导入备份并生效" {
+                    backupError = false
+                }
             }
             Button("取消", role: .cancel) { pendingImport = nil }
         }
@@ -2026,9 +2036,9 @@ struct SettingsView: View {
                 HStack(spacing: 6) {
                     Group {
                         if showAPIKey {
-                            TextField("API Key（本地模型可留空）", text: $store.settings.apiKey)
+                            TextField("API Key（本地模型可留空）", text: apiKeyBinding)
                         } else {
-                            SecureField("API Key（本地模型可留空）", text: $store.settings.apiKey)
+                            SecureField("API Key（本地模型可留空）", text: apiKeyBinding)
                         }
                     }
                     .textFieldStyle(.roundedBorder)
@@ -2043,7 +2053,7 @@ struct SettingsView: View {
                     .buttonStyle(.plain)
                     .hoverPointing()
                     .help(showAPIKey ? "隐藏 Key" : "显示 Key")
-                    pasteButton { store.settings.apiKey = clipboardString() }
+                    pasteButton { store.updateAPIKey(clipboardString()) }
                 }
                 HStack(spacing: 6) {
                     TextField("模型名，如 glm-4.6", text: $store.settings.aiModel)
@@ -2286,14 +2296,14 @@ struct SettingsView: View {
         panel.allowsMultipleSelection = false
         panel.message = "选择此前导出的 DeskDaily 备份 JSON 文件"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        guard let data = try? Data(contentsOf: url),
-              let imported = try? JSONDecoder().decode(AppData.self, from: data) else {
+        do {
+            let encoded = try Data(contentsOf: url)
+            pendingImport = try Store.decodeAndValidate(encoded)
+            confirmImport = true
+        } catch {
             backupError = true
-            backupMessage = "无法读取：请选择 DeskDaily 导出的 JSON 备份"
-            return
+            backupMessage = "无法导入：\(error.localizedDescription)"
         }
-        pendingImport = imported
-        confirmImport = true
     }
 }
 
@@ -2615,12 +2625,16 @@ struct ChatView: View {
     private func fetchReply() {
         isWaiting = true
         errorMessage = nil
+        // 新请求不能留下上一轮可点击的候选，避免误应用旧清单。
+        detectedTasks = []
+        showNoTasksHint = false
         let history = messages
         let system = systemPrompt
         let settings = store.settings
         Task { @MainActor in
             do {
-                let reply = try await AIClient.shared.chat(system: system, messages: history, settings: settings)
+                let reply = try await AIClient.shared.chat(system: system, messages: history, settings: settings,
+                                                            apiKey: store.apiKey)
                 messages.append(ChatMessage(role: "assistant", content: reply))
                 detectedTasks = AIClient.parseTasks(from: reply)
                 showNoTasksHint = detectedTasks.isEmpty
@@ -2629,6 +2643,8 @@ struct ChatView: View {
                     extractMemories()
                 }
             } catch {
+                detectedTasks = []
+                showNoTasksHint = false
                 errorMessage = error.localizedDescription
                 isWaiting = false
             }
@@ -2657,6 +2673,7 @@ struct ChatView: View {
                 system: system,
                 messages: [ChatMessage(role: "user", content: recent)],
                 settings: settings,
+                apiKey: store.apiKey,
                 timeout: 30) else { return }
             var snippet = text
             if let start = text.firstIndex(of: "["), let end = text.lastIndex(of: "]"), start < end {

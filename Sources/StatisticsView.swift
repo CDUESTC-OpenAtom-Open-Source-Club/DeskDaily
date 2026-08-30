@@ -2,10 +2,17 @@ import SwiftUI
 
 // MARK: - 统计数据模型
 
+enum StatsScope: String, CaseIterable, Identifiable {
+    case currentSheet
+    case allSheets
+
+    var id: Self { self }
+}
+
 /// 热力图单日格子
 struct DayCell: Equatable {
     let key: String        // yyyy-MM-dd
-    let total: Int         // 当天跨所有计划表的活跃任务数
+    let total: Int         // 当天范围内的活跃任务数
     let done: Int          // 当天已完成数
     let isToday: Bool
     let isFuture: Bool
@@ -32,6 +39,25 @@ struct StatsSnapshot {
 // MARK: - Store 统计扩展
 
 extension Store {
+    /// 统计范围对应的计划表；当前表始终只取当前激活表。
+    func statsSheets(scope: StatsScope) -> [PlanSheet] {
+        switch scope {
+        case .currentSheet:
+            return activeSheet.map { [$0] } ?? []
+        case .allSheets:
+            return sheets
+        }
+    }
+
+    func statsScopeTitle(_ scope: StatsScope) -> String {
+        switch scope {
+        case .currentSheet:
+            return activeSheetName
+        case .allSheets:
+            return "全部计划表"
+        }
+    }
+
     // MARK: 日历辅助（dayKey 字符串加减天）
 
     /// "yyyy-MM-dd" → 该日正午的 Date（取正午避免夏令时边界误差）
@@ -92,11 +118,11 @@ extension Store {
         return task.createdOn.isEmpty || task.createdOn <= key
     }
 
-    /// 某天跨所有计划表的活跃任务数 / 已完成数
-    func dayCounts(key: String, weekday: Int) -> (total: Int, done: Int) {
+    /// 某天范围内的活跃任务数 / 已完成数
+    func dayCounts(key: String, weekday: Int, scope: StatsScope = .currentSheet) -> (total: Int, done: Int) {
         var total = 0
         var done = 0
-        for sheet in sheets {
+        for sheet in statsSheets(scope: scope) {
             for task in sheet.tasks {
                 guard wasActive(task, onDay: key, weekday: weekday) else { continue }
                 total += 1
@@ -162,7 +188,7 @@ extension Store {
     // MARK: 快照与报告（重计算集中在这里，UI 只读）
 
     /// 统计快照：三张卡片数字 + 最近 N 周热力图
-    func buildStatsSnapshot(weeks weekCount: Int = 26) -> StatsSnapshot {
+    func buildStatsSnapshot(weeks weekCount: Int = 26, scope: StatsScope = .currentSheet) -> StatsSnapshot {
         let today = currentDay
         let monday = mondayKeyOfWeek()
         var columns: [[DayCell]] = []
@@ -177,7 +203,7 @@ extension Store {
                 if key > today {
                     column.append(DayCell(key: key, total: 0, done: 0, isToday: false, isFuture: true))
                 } else {
-                    let counts = dayCounts(key: key, weekday: weekday(ofDayKey: key))
+                    let counts = dayCounts(key: key, weekday: weekday(ofDayKey: key), scope: scope)
                     column.append(DayCell(key: key, total: counts.total, done: counts.done,
                                           isToday: key == today, isFuture: false))
                     if key >= monday {
@@ -191,7 +217,7 @@ extension Store {
         var totalCompletions = 0
         var longest = 0
         var taskCount = 0
-        for sheet in sheets {
+        for sheet in statsSheets(scope: scope) {
             for task in sheet.tasks {
                 taskCount += 1
                 totalCompletions += task.doneDays.filter { $0 <= today }.count
@@ -209,7 +235,7 @@ extension Store {
     }
 
     /// 本地每周复盘报告（Markdown，纯本地拼字符串，不调 AI）
-    func weeklyReportMarkdown() -> String {
+    func weeklyReportMarkdown(scope: StatsScope = .currentSheet) -> String {
         let monday = mondayKeyOfWeek()
         let dayNames = [2: "一", 3: "二", 4: "三", 5: "四", 6: "五", 7: "六", 1: "日"]
         var dayLines: [String] = []
@@ -218,7 +244,7 @@ extension Store {
         var key = monday
         while key <= currentDay {
             let weekday = weekday(ofDayKey: key)
-            let counts = dayCounts(key: key, weekday: weekday)
+            let counts = dayCounts(key: key, weekday: weekday, scope: scope)
             sumTotal += counts.total
             sumDone += counts.done
             let rate = counts.total > 0
@@ -230,7 +256,7 @@ extension Store {
         }
         var topTask: (name: String, count: Int)? = nil
         var longestTask: (name: String, days: Int)? = nil
-        for sheet in sheets {
+        for sheet in statsSheets(scope: scope) {
             for task in sheet.tasks {
                 let weekHits = task.doneDays.filter { $0 >= monday && $0 <= currentDay }.count
                 if weekHits > (topTask?.count ?? 0) { topTask = (task.title, weekHits) }
@@ -239,7 +265,7 @@ extension Store {
             }
         }
         var lines: [String] = []
-        lines.append("# DeskDaily 每周复盘（\(shortDayLabel(monday)) - \(shortDayLabel(currentDay))）")
+        lines.append("# DeskDaily 每周复盘（\(statsScopeTitle(scope)) · \(shortDayLabel(monday)) - \(shortDayLabel(currentDay))）")
         lines.append("")
         let weekPct = sumTotal > 0 ? Int((Double(sumDone) / Double(sumTotal) * 100).rounded()) : 0
         lines.append("本周共完成 \(sumDone)/\(sumTotal) 项，完成率 \(weekPct)%。")
@@ -364,10 +390,12 @@ struct HeatmapView: View {
 
 struct StatisticsView: View {
     @EnvironmentObject var store: Store
+    @State private var scope: StatsScope = .currentSheet
     @State private var snapshot: StatsSnapshot? = nil
     @State private var reportMarkdown: String? = nil
     @State private var aiComment: String? = nil
     @State private var aiWaiting = false
+    @State private var aiRequestToken = 0
     @State private var aiError: String? = nil
     @State private var toast: String? = nil
     @State private var toastToken = 0
@@ -377,11 +405,27 @@ struct StatisticsView: View {
             && !store.settings.aiModel.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
+    private var scopeTitle: String {
+        store.statsScopeTitle(scope)
+    }
+
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 12) {
-                Text("统计")
-                    .font(.system(size: 14, weight: .bold))
+                HStack(spacing: 10) {
+                    Text(scopeTitle)
+                        .font(.system(size: 14, weight: .bold))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 0)
+                    Picker("统计范围", selection: $scope) {
+                        Text("当前表").tag(StatsScope.currentSheet)
+                        Text("全部").tag(StatsScope.allSheets)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 134)
+                }
                 if let s = snapshot, s.hasData {
                     statCards(s)
                     HeatmapView(weeks: s.weeks)
@@ -423,9 +467,11 @@ struct StatisticsView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .onAppear { snapshot = store.buildStatsSnapshot() }
-        .onChange(of: store.sheets) { _ in snapshot = store.buildStatsSnapshot() }
-        .onChange(of: store.currentDay) { _ in snapshot = store.buildStatsSnapshot() }
+        .onAppear { refreshStatistics() }
+        .onChange(of: scope) { _ in refreshStatistics() }
+        .onChange(of: store.sheets) { _ in refreshStatistics() }
+        .onChange(of: store.activeSheetId) { _ in refreshStatistics() }
+        .onChange(of: store.currentDay) { _ in refreshStatistics() }
     }
 
     // MARK: 三张统计卡片
@@ -579,15 +625,17 @@ struct StatisticsView: View {
         withDDAnimation {
             aiComment = nil
             aiError = nil
-            reportMarkdown = store.weeklyReportMarkdown()
+            reportMarkdown = store.weeklyReportMarkdown(scope: scope)
         }
     }
 
     private func runAIComment() {
         guard !aiWaiting else { return }
-        let report = reportMarkdown ?? store.weeklyReportMarkdown()
+        let report = reportMarkdown ?? store.weeklyReportMarkdown(scope: scope)
         if reportMarkdown == nil { reportMarkdown = report }
         aiWaiting = true
+        aiRequestToken += 1
+        let requestToken = aiRequestToken
         aiError = nil
         aiComment = nil
         let settings = store.settings
@@ -597,11 +645,17 @@ struct StatisticsView: View {
                     system: "你是复盘教练，简短点评3-5句，语气真诚，先肯定亮点再给一条可执行建议。",
                     messages: [ChatMessage(role: "user", content: report)],
                     settings: settings,
+                    apiKey: store.apiKey,
                     timeout: 60)
-                withDDAnimation { aiComment = reply }
+                withDDAnimation {
+                    guard aiRequestToken == requestToken else { return }
+                    aiComment = reply
+                }
             } catch {
+                guard aiRequestToken == requestToken else { return }
                 aiError = "AI 点评失败：\(error.localizedDescription)"
             }
+            guard aiRequestToken == requestToken else { return }
             aiWaiting = false
         }
     }
@@ -609,6 +663,15 @@ struct StatisticsView: View {
     private func exportToday() {
         copyToClipboard(store.todayMarkdown())
         showToast("今日 Markdown 已复制到剪贴板")
+    }
+
+    private func refreshStatistics() {
+        aiRequestToken += 1
+        aiWaiting = false
+        snapshot = store.buildStatsSnapshot(scope: scope)
+        reportMarkdown = nil
+        aiComment = nil
+        aiError = nil
     }
 
     private func copyToClipboard(_ text: String) {

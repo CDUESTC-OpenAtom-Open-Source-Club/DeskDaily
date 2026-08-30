@@ -79,13 +79,13 @@ final class AIClient {
     private init() {}
 
     /// OpenAI 兼容的 chat/completions 调用（智谱 GLM / DeepSeek / Ollama 等通用）
-    func chat(system: String, messages: [ChatMessage], settings: AppSettings, timeout: TimeInterval = 90) async throws -> String {
+    func chat(system: String, messages: [ChatMessage], settings: AppSettings, apiKey: String, timeout: TimeInterval = 90) async throws -> String {
         let urlString = settings.aiBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !urlString.isEmpty, let url = URL(string: urlString) else { throw AIError.badURL }
         var request = URLRequest(url: url, timeoutInterval: timeout)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let key = settings.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if !key.isEmpty {
             request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         }

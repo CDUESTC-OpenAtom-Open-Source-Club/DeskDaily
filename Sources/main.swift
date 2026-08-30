@@ -21,13 +21,14 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         let info = response.notification.request.content.userInfo
         let action = response.actionIdentifier
         let taskID = (info["taskID"] as? String).flatMap(UUID.init(uuidString:))
-        if let taskID = taskID {
+        let sheetID = (info["sheetID"] as? String).flatMap(UUID.init(uuidString:))
+        if let taskID, let sheetID {
             DispatchQueue.main.async {
                 let store = Store.shared
                 if action == Notify.actionComplete {
-                    withDDAnimation { store.completeTask(id: taskID) }
+                    withDDAnimation { _ = store.completeTask(id: taskID, sheetID: sheetID) }
                 } else if action == Notify.actionPostpone10 {
-                    withDDAnimation { store.postponeTask(id: taskID, by: 10) }
+                    withDDAnimation { _ = store.postponeTask(id: taskID, sheetID: sheetID, by: 10) }
                 }
             }
         }
@@ -45,14 +46,15 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMainMenu()
-        _ = Store.shared
-        WindowController.shared.setup()
-        Notify.requestAuth()
         Notify.registerCategories()
         Notify.center?.delegate = NotificationDelegate.shared
+        let store = Store.shared
+        Notify.requestAuth()
+        store.refreshNotificationSchedule()
+        WindowController.shared.setup()
         // 全局热键 / 菜单栏迷你入口（按设置开关）
-        Hotkey.setEnabled(Store.shared.settings.globalHotkey)
-        StatusBarManager.shared.setEnabled(Store.shared.settings.statusBarIcon)
+        Hotkey.setEnabled(store.settings.globalHotkey)
+        StatusBarManager.shared.setEnabled(store.settings.statusBarIcon)
     }
 
     // 程序化构建主菜单（含编辑菜单），保证输入框里 ⌘X/⌘C/⌘V/⌘A 可用

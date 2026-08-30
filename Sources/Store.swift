@@ -102,6 +102,12 @@ struct AppSettings: Codable, Equatable {
     // Dock 图标显示今日未完成数徽标
     var dockBadge: Bool = true
 
+    private enum CodingKeys: String, CodingKey {
+        case tzMode, windowMode, progressMode, soundOn, notifOn, windowFrame
+        case aiBaseURL, aiModel, apiKey, memoryEnabled, migratedFloating, reviewTime
+        case globalHotkey, statusBarIcon, collapsed, idleFade, idleFadeSeconds, dockBadge
+    }
+
     init() {}
 
     // 兼容旧数据文件：缺失的新字段回落到默认值，不丢用户数据
@@ -125,6 +131,27 @@ struct AppSettings: Codable, Equatable {
         idleFade = try c.decodeIfPresent(Bool.self, forKey: .idleFade) ?? true
         idleFadeSeconds = try c.decodeIfPresent(Int.self, forKey: .idleFadeSeconds) ?? 90
         dockBadge = try c.decodeIfPresent(Bool.self, forKey: .dockBadge) ?? true
+    }
+    // API Key 仅为兼容旧文件读取；编码时永不写入普通 JSON。
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(tzMode, forKey: .tzMode)
+        try c.encode(windowMode, forKey: .windowMode)
+        try c.encode(progressMode, forKey: .progressMode)
+        try c.encode(soundOn, forKey: .soundOn)
+        try c.encode(notifOn, forKey: .notifOn)
+        try c.encodeIfPresent(windowFrame, forKey: .windowFrame)
+        try c.encode(aiBaseURL, forKey: .aiBaseURL)
+        try c.encode(aiModel, forKey: .aiModel)
+        try c.encode(memoryEnabled, forKey: .memoryEnabled)
+        try c.encode(migratedFloating, forKey: .migratedFloating)
+        try c.encodeIfPresent(reviewTime, forKey: .reviewTime)
+        try c.encode(globalHotkey, forKey: .globalHotkey)
+        try c.encode(statusBarIcon, forKey: .statusBarIcon)
+        try c.encode(collapsed, forKey: .collapsed)
+        try c.encode(idleFade, forKey: .idleFade)
+        try c.encode(idleFadeSeconds, forKey: .idleFadeSeconds)
+        try c.encode(dockBadge, forKey: .dockBadge)
     }
 }
 
@@ -203,6 +230,7 @@ struct MemoryEntry: Codable, Identifiable, Equatable {
 }
 
 struct AppData: Codable {
+    var schemaVersion: Int = AppDataValidator.currentSchemaVersion
     var settings = AppSettings()
     var sheets: [PlanSheet] = []
     var activeSheetId: UUID?
@@ -216,7 +244,8 @@ struct AppData: Codable {
 
     init(settings: AppSettings, sheets: [PlanSheet], activeSheetId: UUID?,
          lastSeenDay: String, memories: [MemoryEntry], chatHistory: [ChatMessage],
-         templates: [PlanSheet] = []) {
+         templates: [PlanSheet] = [], schemaVersion: Int = AppDataValidator.currentSchemaVersion) {
+        self.schemaVersion = schemaVersion
         self.settings = settings
         self.sheets = sheets
         self.activeSheetId = activeSheetId
@@ -231,6 +260,7 @@ struct AppData: Codable {
     // 兼容旧版顶层 tasks 数组 → 迁移为单个「今日计划」表
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
         settings = try c.decodeIfPresent(AppSettings.self, forKey: .settings) ?? AppSettings()
         if let list = try c.decodeIfPresent([PlanSheet].self, forKey: .sheets) {
             sheets = list
@@ -282,6 +312,8 @@ enum Notify {
     static let actionStartReview = "START_REVIEW"
     // 番茄钟专注结束通知分类：带「标记完成」按钮
     static let focusEndCategory = "FOCUS_END"
+    static let schedulePrefix = "dd.schedule."
+    static private(set) var scheduleReady = false
 
     /// 启动时注册分类（重复注册安全，系统以最后一次为准）
     static func registerCategories() {
@@ -320,8 +352,76 @@ enum Notify {
         center.add(request)
     }
 
-    /// 睡前复盘提醒：点击通知或「开始复盘」按钮都会打开 AI 复盘对话（userInfo 标记 open_review）
-    static func postReview() {
+    /// 将每张计划表的未来任务 occurrence 注册为稳定的一次性日历通知。
+    static func refreshNotificationSchedule(sheets: [PlanSheet], settings: AppSettings,
+                                             tz: TimeZone, currentDay: String) {
+        guard let center = center else { scheduleReady = false; return }
+        center.getPendingNotificationRequests { requests in
+            let ids = requests.map { $0.identifier }.filter { $0.hasPrefix(schedulePrefix) }
+            center.removePendingNotificationRequests(withIdentifiers: ids)
+            guard settings.notifOn else { scheduleReady = false; return }
+            let now = Store.now()
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = tz
+            guard let baseDate = date(fromDayKey: currentDay, calendar: calendar) else {
+                scheduleReady = false
+                return
+            }
+            for sheet in sheets {
+                for task in sheet.tasks {
+                    guard let start = task.remindAt,
+                          (try? TaskItem.validate(remindAt: start, duration: task.durationMinutes)) != nil else { continue }
+                    for offset in 0..<7 {
+                        guard let day = calendar.date(byAdding: .day, value: offset, to: baseDate) else { continue }
+                        let dayKey = Store.dayKey(tz: tz, date: day)
+                        let weekday = calendar.component(.weekday, from: day)
+                        guard task.repeatRule.isActive(on: dayKey, weekday: weekday),
+                              !task.doneDays.contains(dayKey) else { continue }
+                        if task.repeatRule.kind == .once && task.repeatRule.date != dayKey { continue }
+                        addScheduled(center: center, task: task, sheetID: sheet.id, dayKey: dayKey,
+                                     minute: start, phase: "start", tz: tz, calendar: calendar, now: now)
+                        if let duration = task.durationMinutes {
+                            addScheduled(center: center, task: task, sheetID: sheet.id, dayKey: dayKey,
+                                         minute: start + duration, phase: "end", tz: tz, calendar: calendar, now: now)
+                        }
+                    }
+                }
+            }
+            scheduleReady = true
+        }
+    }
+
+    private static func addScheduled(center: UNUserNotificationCenter, task: TaskItem, sheetID: UUID,
+                                     dayKey: String, minute: Int, phase: String, tz: TimeZone,
+                                     calendar: Calendar, now: Date) {
+        guard let day = date(fromDayKey: dayKey, calendar: calendar) else { return }
+        var components = calendar.dateComponents([.year, .month, .day], from: day)
+        components.hour = minute / 60
+        components.minute = minute % 60
+        components.timeZone = tz
+        guard let fireDate = calendar.date(from: components), fireDate > now else { return }
+        let id = "\(schedulePrefix)\(sheetID.uuidString).\(task.id.uuidString).\(dayKey).\(phase)"
+        let content = UNMutableNotificationContent()
+        content.title = phase == "start" ? "⏰ \(task.title)" : "✅ 时间到：\(task.title)"
+        content.body = phase == "start" ? "到设定的提醒时间了，别忘了完成它" : "本时段结束了，完成就打勾"
+        content.sound = .default
+        content.categoryIdentifier = taskReminderCategory
+        content.userInfo = ["taskID": task.id.uuidString, "sheetID": sheetID.uuidString,
+                            "dayKey": dayKey, "phase": phase]
+        let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
+        center.add(UNNotificationRequest(identifier: id, content: content, trigger: trigger))
+    }
+
+    private static func date(fromDayKey key: String, calendar: Calendar) -> Date? {
+        let parts = key.split(separator: "-")
+        guard parts.count == 3, let y = Int(parts[0]), let m = Int(parts[1]), let d = Int(parts[2]) else { return nil }
+        var components = DateComponents()
+        components.year = y; components.month = m; components.day = d; components.hour = 12
+        return calendar.date(from: components)
+    }
+
+    /// 睡前复盘即时通知：由前台时钟判断当天是否到点后触发
+    static func postReviewReminder() {
         guard let center = center else { return }
         let content = UNMutableNotificationContent()
         content.title = "🌙 该复盘了"
@@ -368,21 +468,26 @@ struct FocusSession: Equatable {
 final class Store: ObservableObject {
     static let shared = Store()
 
-    @Published var settings: AppSettings { didSet { if settings != oldValue { persist(); refreshDockBadge() } } }
-    @Published var sheets: [PlanSheet] { didSet { persist(); refreshDockBadge() } }
-    @Published var activeSheetId: UUID? { didSet { persist(); refreshDockBadge() } }
+    @Published var settings: AppSettings { didSet { if settings != oldValue { persist(); refreshDockBadge(); scheduleNotificationRefresh() } } }
+    @Published var sheets: [PlanSheet] { didSet { persist(); refreshDockBadge(); scheduleNotificationRefresh() } }
+    @Published var activeSheetId: UUID? { didSet { persist(); refreshDockBadge(); scheduleNotificationRefresh() } }
     @Published var memories: [MemoryEntry] { didSet { persist() } }
     @Published var chatHistory: [ChatMessage] { didSet { persist() } }
-    @Published var templates: [PlanSheet] { didSet { persist() } }
+    @Published var templates: [PlanSheet] { didSet { persist(); scheduleNotificationRefresh() } }
     @Published var currentDay: String
     @Published var nowMinutes: Int
     @Published var tick: Int = 0
+    @Published var lastOperationError: String? = nil
+    @Published var dataError: String? = nil
+    @Published var apiKey: String = ""
     /// 撤销删除暂存（只保留最近一次，不写入 data.json）
     @Published var lastDeleted: DeletedTaskInfo? = nil
     /// 番茄钟专注会话（内存态，不写入 data.json）
     @Published var focusSession: FocusSession? = nil
 
     private var timerCancellable: AnyCancellable?
+    private var scheduleRefreshWorkItem: DispatchWorkItem?
+    private var canPersist = true
     /// 睡前复盘当天已发过的标记（内存态，不持久化；跨天自动失效）
     private var reviewFiredDay: String = ""
 
@@ -399,21 +504,39 @@ final class Store: ObservableObject {
     }
 
     init() {
-        let loaded = Store.load()
+        let loadResult = Store.loadResult()
+        let loaded = loadResult.data
+        dataError = loadResult.error?.localizedDescription
+        canPersist = loadResult.error == nil
         var loadedSettings = loaded.settings
+        if !loadedSettings.apiKey.isEmpty {
+            do {
+                try KeychainStore.shared.migrateLegacyValue(loadedSettings.apiKey)
+                loadedSettings.apiKey = ""
+            } catch {
+                dataError = "API Key 迁移失败：\(error.localizedDescription)"
+            }
+        }
         if !loadedSettings.migratedFloating {
             // v1.1：贴附桌面在部分环境收不到点击，老用户一次性迁到悬浮置顶
             loadedSettings.windowMode = .floating
             loadedSettings.migratedFloating = true
         }
         settings = loadedSettings
+        apiKey = (try? KeychainStore.shared.read()) ?? ""
         var resolvedSheets = loaded.sheets
         if resolvedSheets.isEmpty {
             let seed = loaded.lastSeenDay.isEmpty ? Store.seedTasks() : []
             resolvedSheets = [PlanSheet(name: "今日计划", colorHex: "8B5CF6", tasks: seed)]
         }
         sheets = resolvedSheets
-        activeSheetId = loaded.activeSheetId ?? resolvedSheets.first?.id
+        activeSheetId = (try? AppDataValidator.validate(AppData(settings: loadedSettings, sheets: resolvedSheets,
+                                                                 activeSheetId: loaded.activeSheetId,
+                                                                 lastSeenDay: loaded.lastSeenDay,
+                                                                 memories: loaded.memories,
+                                                                 chatHistory: loaded.chatHistory,
+                                                                 templates: loaded.templates)))?.activeSheetId
+            ?? resolvedSheets.first?.id
         memories = loaded.memories
         chatHistory = loaded.chatHistory
         templates = loaded.templates
@@ -425,6 +548,36 @@ final class Store: ObservableObject {
         refreshDockBadge()
         timerCancellable = Timer.publish(every: 15, on: .main, in: .common).autoconnect()
             .sink { [weak self] _ in self?.onTimer() }
+    }
+
+    func updateAPIKey(_ value: String) {
+        let clean = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            if clean.isEmpty {
+                try KeychainStore.shared.delete()
+            } else {
+                try KeychainStore.shared.save(clean)
+            }
+            apiKey = clean
+            lastOperationError = nil
+        } catch {
+            lastOperationError = "无法保存 API Key：\(error.localizedDescription)"
+        }
+    }
+
+    func refreshNotificationSchedule() {
+        scheduleNotificationRefresh()
+    }
+
+    private func scheduleNotificationRefresh() {
+        scheduleRefreshWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            Notify.refreshNotificationSchedule(sheets: self.sheets, settings: self.settings,
+                                               tz: self.tz, currentDay: self.currentDay)
+        }
+        scheduleRefreshWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
     }
 
     // MARK: 当前计划表
@@ -696,11 +849,15 @@ final class Store: ObservableObject {
 
     func addTask(title: String, rule: RepeatRule, remindAt: Int? = nil, duration: Int? = nil) {
         let t = String(title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60))
-        guard !t.isEmpty else { return }
+        guard !t.isEmpty else { lastOperationError = "任务标题不能为空"; return }
         let durationValue = (duration ?? 0) > 0 ? duration : nil
-        mutateActiveTasks { list in
-            list.append(TaskItem(title: t, remindAt: remindAt, durationMinutes: durationValue,
-                                 repeatRule: rule, createdOn: currentDay))
+        do {
+            try TaskItem.validate(remindAt: remindAt, duration: durationValue)
+            let candidate = TaskItem(title: t, remindAt: remindAt, durationMinutes: durationValue, repeatRule: rule, createdOn: currentDay)
+            _ = try AppDataValidator.validate(AppData(settings: settings, sheets: sheets + [PlanSheet(name: "临时", colorHex: "8B5CF6", tasks: [candidate])], activeSheetId: activeSheetId, lastSeenDay: currentDay, memories: memories, chatHistory: chatHistory, templates: templates))
+            mutateActiveTasks { $0.append(candidate) }
+        } catch {
+            lastOperationError = error.localizedDescription
         }
     }
 
@@ -721,30 +878,48 @@ final class Store: ObservableObject {
         }
     }
 
-    /// 无论当前是否已勾选，都把该任务在今天置为完成（通知按钮「完成」用）
-    func completeTask(id: UUID) {
-        for i in sheets.indices {
-            guard let j = sheets[i].tasks.firstIndex(where: { $0.id == id }) else { continue }
-            if !sheets[i].tasks[j].doneDays.contains(currentDay) {
-                sheets[i].tasks[j].doneDays.insert(currentDay)
-            }
-            // 该任务正在专注中 → 一并结束专注
-            if focusSession?.taskID == id { focusSession = nil }
-            return
+    /// 无论当前是否已勾选，都把指定计划表内的任务在今天置为完成。
+    @discardableResult
+    func completeTask(id: UUID, sheetID: UUID) -> Bool {
+        guard let i = sheets.firstIndex(where: { $0.id == sheetID }),
+              let j = sheets[i].tasks.firstIndex(where: { $0.id == id }) else { return false }
+        if !sheets[i].tasks[j].doneDays.contains(currentDay) {
+            sheets[i].tasks[j].doneDays.insert(currentDay)
         }
+        if focusSession?.taskID == id { focusSession = nil }
+        return true
     }
 
-    /// 推迟提醒 minutes 分钟；原本无时间则设为当前时间 + minutes（通知按钮「推迟10分钟」用）
-    func postponeTask(id: UUID, by minutes: Int) {
-        for i in sheets.indices {
-            guard let j = sheets[i].tasks.firstIndex(where: { $0.id == id }) else { continue }
-            let base = sheets[i].tasks[j].remindAt ?? nowMinutes
-            sheets[i].tasks[j].remindAt = min(max(base + minutes, 0), 1439)
-            // 清掉当日“已提醒”标记，到新时间点会重新提醒
-            sheets[i].tasks[j].remindedDays.remove(currentDay)
-            sheets[i].tasks[j].endRemindedDays.remove(currentDay)
-            return
+    /// 推迟指定计划表中的提醒。跨午夜的推迟会被拒绝，避免写入非法时间。
+    @discardableResult
+    func postponeTask(id: UUID, sheetID: UUID, by minutes: Int) -> Bool {
+        guard minutes > 0,
+              let i = sheets.firstIndex(where: { $0.id == sheetID }),
+              let j = sheets[i].tasks.firstIndex(where: { $0.id == id }) else { return false }
+        let base = sheets[i].tasks[j].remindAt ?? nowMinutes
+        let next = base + minutes
+        do {
+            try TaskItem.validate(remindAt: next, duration: sheets[i].tasks[j].durationMinutes)
+        } catch {
+            lastOperationError = "无法推迟提醒：\(error.localizedDescription)"
+            return false
         }
+        sheets[i].tasks[j].remindAt = next
+        sheets[i].tasks[j].remindedDays.remove(currentDay)
+        sheets[i].tasks[j].endRemindedDays.remove(currentDay)
+        return true
+    }
+
+    /// 当前表内完成任务，供界面动作使用。
+    func completeTask(id: UUID) {
+        guard let sheetID = activeSheet?.id else { return }
+        _ = completeTask(id: id, sheetID: sheetID)
+    }
+
+    /// 当前表内推迟提醒，供界面动作使用。
+    func postponeTask(id: UUID, by minutes: Int) {
+        guard let sheetID = activeSheet?.id else { return }
+        _ = postponeTask(id: id, sheetID: sheetID, by: minutes)
     }
 
     func rename(_ id: UUID, to title: String) {
@@ -757,14 +932,21 @@ final class Store: ObservableObject {
     }
 
     func setRemind(_ id: UUID, minutes: Int?, duration: Int? = nil) {
+        let durationValue = (duration ?? 0) > 0 ? duration : nil
+        do {
+            try TaskItem.validate(remindAt: minutes, duration: durationValue)
+        } catch {
+            lastOperationError = error.localizedDescription
+            return
+        }
         mutateActiveTasks { list in
             guard let i = list.firstIndex(where: { $0.id == id }) else { return }
             list[i].remindAt = minutes
-            list[i].durationMinutes = (duration ?? 0) > 0 ? duration : nil
+            list[i].durationMinutes = durationValue
             if minutes == nil || minutes! > nowMinutes {
                 list[i].remindedDays.remove(currentDay)
             }
-            if minutes == nil || minutes! + (list[i].durationMinutes ?? 0) > nowMinutes {
+            if minutes == nil || minutes! + (durationValue ?? 0) > nowMinutes {
                 list[i].endRemindedDays.remove(currentDay)
             }
         }
@@ -862,17 +1044,29 @@ final class Store: ObservableObject {
     /// 用 AI 生成的清单整体覆盖当前计划表
     func replaceAll(with newTasks: [(title: String, repeatDaily: Bool, remindAt: Int?, duration: Int?)]) {
         var items: [TaskItem] = []
-        for task in newTasks {
-            let clean = String(task.title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60))
-            guard !clean.isEmpty else { continue }
-            let rule = task.repeatDaily ? RepeatRule() : RepeatRule.once(date: currentDay)
-            let durationValue = (task.duration ?? 0) > 0 ? task.duration : nil
-            items.append(TaskItem(title: clean, remindAt: task.remindAt, durationMinutes: durationValue,
-                                  repeatRule: rule, createdOn: currentDay))
-        }
-        guard !items.isEmpty else { return }
-        mutateActiveTasks { list in
-            list = items
+        do {
+            for task in newTasks {
+                let clean = String(task.title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60))
+                guard !clean.isEmpty else { continue }
+                let rule = task.repeatDaily ? RepeatRule() : RepeatRule.once(date: currentDay)
+                let durationValue = (task.duration ?? 0) > 0 ? task.duration : nil
+                try TaskItem.validate(remindAt: task.remindAt, duration: durationValue)
+                items.append(TaskItem(title: clean, remindAt: task.remindAt, durationMinutes: durationValue,
+                                      repeatRule: rule, createdOn: currentDay))
+            }
+            guard !items.isEmpty else {
+                lastOperationError = "没有可替换的有效任务"
+                return
+            }
+            guard let active = activeSheet else { return }
+            var candidate = active
+            candidate.tasks = items
+            _ = try AppDataValidator.validate(AppData(settings: settings, sheets: sheets.map { $0.id == active.id ? candidate : $0 },
+                                                       activeSheetId: activeSheetId, lastSeenDay: currentDay,
+                                                       memories: memories, chatHistory: chatHistory, templates: templates))
+            mutateActiveTasks { $0 = items }
+        } catch {
+            lastOperationError = error.localizedDescription
         }
     }
 
@@ -893,7 +1087,8 @@ final class Store: ObservableObject {
 
     /// 开始专注（同一时间只保留一个会话）
     func startFocus(_ id: UUID) {
-        guard let task = taskByID(id) else { return }
+        guard let sheet = activeSheet,
+              let task = sheet.tasks.first(where: { $0.id == id }) else { return }
         let minutes = focusMinutes(for: task)
         focusSession = FocusSession(taskID: id,
                                     endsAt: Store.now().addingTimeInterval(TimeInterval(minutes) * 60),
@@ -925,10 +1120,12 @@ final class Store: ObservableObject {
     /// 到点收尾：通知（带「标记完成」）+ 音效（15 秒 tick 里检查）
     private func checkFocusEnd() {
         guard let f = focusSession, f.pausedRemaining == nil, Store.now() >= f.endsAt else { return }
-        let task = taskByID(f.taskID)
+        let match = sheets.lazy.compactMap { sheet -> (TaskItem, UUID)? in
+            sheet.tasks.first(where: { $0.id == f.taskID }).map { ($0, sheet.id) }
+        }.first
         focusSession = nil
         if settings.soundOn { Sound.play() }
-        if settings.notifOn, let task = task, let sheetID = activeSheet?.id {
+        if settings.notifOn, let (task, sheetID) = match {
             Notify.postFocusEnd(taskTitle: task.title, taskID: task.id, sheetID: sheetID)
         }
     }
@@ -936,28 +1133,27 @@ final class Store: ObservableObject {
     // MARK: 提醒
 
     private func checkReminders() {
-        guard let i = activeIndex else { return }
         let weekday = weekdayNow()
-        for j in sheets[i].tasks.indices {
-            let task = sheets[i].tasks[j]
-            guard task.repeatRule.isActive(on: currentDay, weekday: weekday),
-                  let start = task.remindAt,
-                  !task.doneDays.contains(currentDay) else { continue }
-            // 时段开始提醒（“阅读前”那一次）
-            if nowMinutes >= start, !task.remindedDays.contains(currentDay) {
-                sheets[i].tasks[j].remindedDays.insert(currentDay)
-                // 只在时间点后 30 分钟内提醒，避免打开 App 时补发一堆过期提醒
-                if nowMinutes - start <= 30 {
-                    fireReminder(for: task, phase: .start, sheetID: sheets[i].id)
+        for sheetIndex in sheets.indices {
+            let sheetID = sheets[sheetIndex].id
+            for taskIndex in sheets[sheetIndex].tasks.indices {
+                let task = sheets[sheetIndex].tasks[taskIndex]
+                guard task.repeatRule.isActive(on: currentDay, weekday: weekday),
+                      let start = task.remindAt,
+                      !task.doneDays.contains(currentDay) else { continue }
+                if nowMinutes >= start, !task.remindedDays.contains(currentDay) {
+                    sheets[sheetIndex].tasks[taskIndex].remindedDays.insert(currentDay)
+                    if nowMinutes - start <= 30 {
+                        fireReminder(for: task, phase: .start, sheetID: sheetID)
+                    }
                 }
-            }
-            // 时段结束提醒（“阅读后”那一次，有设定时长才有）
-            if let duration = task.durationMinutes {
-                let end = start + duration
-                if nowMinutes >= end, !task.endRemindedDays.contains(currentDay) {
-                    sheets[i].tasks[j].endRemindedDays.insert(currentDay)
-                    if nowMinutes - end <= 30 {
-                        fireReminder(for: sheets[i].tasks[j], phase: .end, sheetID: sheets[i].id)
+                if let duration = task.durationMinutes {
+                    let end = start + duration
+                    if nowMinutes >= end, !task.endRemindedDays.contains(currentDay) {
+                        sheets[sheetIndex].tasks[taskIndex].endRemindedDays.insert(currentDay)
+                        if nowMinutes - end <= 30 {
+                            fireReminder(for: sheets[sheetIndex].tasks[taskIndex], phase: .end, sheetID: sheetID)
+                        }
                     }
                 }
             }
@@ -966,7 +1162,7 @@ final class Store: ObservableObject {
 
     private enum ReminderPhase { case start, end }
 
-    private func fireReminder(for task: TaskItem, phase: ReminderPhase, sheetID: UUID?) {
+    private func fireReminder(for task: TaskItem, phase: ReminderPhase, sheetID: UUID) {
         let start = timeString(task.remindAt ?? 0)
         var title = "⏰ \(task.title)"
         var body = "到设定的提醒时间了（\(start)），别忘了完成它"
@@ -977,9 +1173,9 @@ final class Store: ObservableObject {
             body = "本时段（\(start)-\(timeString((task.remindAt ?? 0) + (task.durationMinutes ?? 0)))）结束了，完成就打勾 ✓"
         }
         if settings.soundOn { Sound.play() }
-        if settings.notifOn {
-            Notify.post(title: title, body: body,
-                        taskID: task.id.uuidString, sheetID: sheetID?.uuidString)
+        // 有系统日历通知时，前台只维护提醒状态与音效，避免横幅重复出现。
+        if settings.notifOn, !Notify.scheduleReady {
+            Notify.post(title: title, body: body, taskID: task.id.uuidString, sheetID: sheetID.uuidString)
         }
     }
 
@@ -991,7 +1187,7 @@ final class Store: ObservableObject {
               reviewFiredDay != currentDay, nowMinutes >= reviewAt else { return }
         reviewFiredDay = currentDay
         if settings.soundOn { Sound.play() }
-        Notify.postReview()
+        Notify.postReviewReminder()
     }
 
     // MARK: 长期记忆
@@ -1013,25 +1209,53 @@ final class Store: ObservableObject {
     // MARK: 持久化
 
     static var dataURL: URL {
-        if let dir = ProcessInfo.processInfo.environment["DD_DATA_DIR"] {
-            return URL(fileURLWithPath: dir).appendingPathComponent("data.json")
+        let directory: URL
+        if let dir = ProcessInfo.processInfo.environment["DD_DATA_DIR"], !dir.isEmpty {
+            directory = URL(fileURLWithPath: dir, isDirectory: true)
+        } else if let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            directory = base.appendingPathComponent("DeskDaily", isDirectory: true)
+        } else {
+            directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
         }
-        guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
-            return URL(fileURLWithPath: "DeskDaily-data.json")
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent("data.json")
+    }
+
+    struct LoadResult {
+        let data: AppData
+        let error: Error?
+    }
+
+    static func decodeAndValidate(_ encoded: Data) throws -> AppData {
+        let decoded = try JSONDecoder().decode(AppData.self, from: encoded)
+        return try AppDataValidator.validate(decoded)
+    }
+
+    static func loadResult() -> LoadResult {
+        guard FileManager.default.fileExists(atPath: dataURL.path) else {
+            return LoadResult(data: AppData(), error: nil)
         }
-        let appDir = base.appendingPathComponent("DeskDaily", isDirectory: true)
-        try? FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
-        return appDir.appendingPathComponent("data.json")
+        do {
+            return LoadResult(data: try decodeAndValidate(Data(contentsOf: dataURL)), error: nil)
+        } catch {
+            return LoadResult(data: AppData(), error: error)
+        }
     }
 
     static func load() -> AppData {
-        guard let data = try? Data(contentsOf: dataURL) else { return AppData() }
-        return (try? JSONDecoder().decode(AppData.self, from: data)) ?? AppData()
+        loadResult().data
     }
 
     func persist() {
-        if let encoded = encodedSnapshot() {
-            try? encoded.write(to: Store.dataURL, options: .atomic)
+        guard canPersist else { return }
+        guard let encoded = encodedSnapshot() else {
+            lastOperationError = "无法保存：当前数据未通过校验"
+            return
+        }
+        do {
+            try encoded.write(to: Store.dataURL, options: .atomic)
+        } catch {
+            lastOperationError = "无法保存数据：\(error.localizedDescription)"
         }
     }
 
@@ -1039,38 +1263,50 @@ final class Store: ObservableObject {
 
     /// 当前全部数据的 JSON 快照（导出 / 自动备份共用）
     func encodedSnapshot() -> Data? {
-        let data = AppData(settings: settings, sheets: sheets, activeSheetId: activeSheetId,
-                           lastSeenDay: currentDay, memories: memories, chatHistory: chatHistory,
-                           templates: templates)
-        return try? JSONEncoder().encode(data)
+        let snapshot = AppData(settings: settings, sheets: sheets, activeSheetId: activeSheetId,
+                               lastSeenDay: currentDay, memories: memories, chatHistory: chatHistory,
+                               templates: templates)
+        do {
+            let validated = try AppDataValidator.validate(snapshot)
+            return try JSONEncoder().encode(validated)
+        } catch {
+            lastOperationError = "无法编码备份：\(error.localizedDescription)"
+            return nil
+        }
     }
 
     static var backupDir: URL {
         dataURL.deletingLastPathComponent().appendingPathComponent("backups", isDirectory: true)
     }
 
-    /// 用导入的备份整体替换当前状态（UI 全量刷新）
-    func restoreAll(from data: AppData) {
+    @discardableResult
+    func restoreAll(from data: AppData) -> Bool {
+        let restoredData: AppData
+        do {
+            restoredData = try AppDataValidator.validate(data)
+        } catch {
+            lastOperationError = "导入失败：\(error.localizedDescription)"
+            return false
+        }
         let oldWindowMode = settings.windowMode
-        settings = data.settings
-        var restored = data.sheets
+        settings = restoredData.settings
+        var restored = restoredData.sheets
         if restored.isEmpty {
             restored = [PlanSheet(name: "今日计划", colorHex: "8B5CF6", tasks: [])]
         }
         sheets = restored
-        if let id = data.activeSheetId, restored.contains(where: { $0.id == id }) {
-            activeSheetId = id
-        } else {
-            activeSheetId = restored.first?.id
-        }
-        memories = data.memories
-        chatHistory = data.chatHistory
-        templates = data.templates
+        activeSheetId = restoredData.activeSheetId ?? restored.first?.id
+        memories = restoredData.memories
+        chatHistory = restoredData.chatHistory
+        templates = restoredData.templates
+        canPersist = true
+        dataError = nil
         if settings.windowMode != oldWindowMode {
             NotificationCenter.default.post(name: .deskDailyWindowModeChanged, object: nil)
         }
         refreshNow()
         persist()
+        return true
     }
 
     /// 启动时自动备份当天数据，仅保留最近 7 份
