@@ -2440,6 +2440,8 @@ struct ChatView: View {
             inputBar
         }
         .frame(width: 340, height: 460)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .overlay(Rectangle().stroke(Color.primary.opacity(0.10), lineWidth: 1))
         .onAppear(perform: autoSendPending)
         .confirmationDialog("将用 AI 候选替换当前 \(store.visibleTasks.filter { !store.isDone($0) }.count) 项未完成任务；\(store.visibleTasks.filter { store.isDone($0) }.count) 项已完成任务会保留。确定吗？",
                             isPresented: $confirmReplace, titleVisibility: .visible) {

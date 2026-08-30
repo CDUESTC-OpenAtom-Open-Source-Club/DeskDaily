@@ -104,17 +104,20 @@ final class WindowController: NSObject, NSWindowDelegate {
 
     private func makeAuxiliaryPanel(frame: NSRect) -> WidgetPanel {
         let p = WidgetPanel(contentRect: frame,
-                            styleMask: [.nonactivatingPanel, .titled, .closable, .fullSizeContentView],
+                            styleMask: [.titled, .closable, .fullSizeContentView],
                             backing: .buffered,
                             defer: false)
         p.isReleasedWhenClosed = false
         p.titlebarAppearsTransparent = true
         p.titleVisibility = .hidden
-        p.isOpaque = false
-        p.backgroundColor = .clear
+        // 辅助窗口必须有自己的不透明底：不能复用主卡片的透明桌面材质，
+        // 否则主卡片和桌面会透进 AI 内容，形成重影。
+        p.isOpaque = true
+        p.backgroundColor = .windowBackgroundColor
         p.hasShadow = true
         p.hidesOnDeactivate = false
         p.becomesKeyOnlyIfNeeded = false
+        p.isMovableByWindowBackground = true
         p.level = Self.level(for: Store.shared.settings.windowMode)
         p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         p.delegate = self
