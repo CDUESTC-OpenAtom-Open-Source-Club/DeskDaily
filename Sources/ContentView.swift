@@ -2535,6 +2535,7 @@ struct ChatView: View {
             Text(markdownInline(message.content))
                 .font(.system(size: 12))
                 .foregroundColor(isUser ? .white : .primary)
+                .textSelection(.enabled)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
                 .background(
@@ -2543,6 +2544,14 @@ struct ChatView: View {
                               ? AnyShapeStyle(Accent.gradient)
                               : AnyShapeStyle(Color.primary.opacity(0.08)))
                 )
+                .contextMenu {
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(message.content, forType: .string)
+                    } label: {
+                        Label("复制整条消息", systemImage: "doc.on.doc")
+                    }
+                }
             if !isUser { Spacer(minLength: 24) }
         }
     }
