@@ -1854,7 +1854,7 @@ struct SettingsView: View {
                     case .data:
                         maintenanceGroup
                         backupGroup
-                        Text("DeskDaily v2.2.0 · 数据保存在本机\n~/Library/Application Support/DeskDaily/")
+                        Text("DeskDaily v2.2.1 · 数据保存在本机\n~/Library/Application Support/DeskDaily/")
                             .font(.system(size: 9.5))
                             .foregroundColor(.secondary)
                             .frame(maxWidth: .infinity, alignment: .center)
@@ -2431,9 +2431,9 @@ struct ChatView: View {
                 errorMessage = message
             }
         }
-        .confirmationDialog("将用 AI 候选替换当前 \(store.visibleTasks.filter { !store.isDone($0) }.count) 项未完成任务；\(store.visibleTasks.filter { store.isDone($0) }.count) 项已完成任务会保留。确定吗？",
+        .confirmationDialog("将清空「\(store.activeSheetName)」当前全部 \(store.visibleTasks.count) 项任务（包括已完成），替换为 \(selectedAIIDs.count) 项选中候选。确定吗？",
                             isPresented: $confirmReplace, titleVisibility: .visible) {
-            Button("替换为 \(selectedAIIDs.count) 项候选任务", role: .destructive) { replaceToday() }
+            Button("替换全部任务", role: .destructive) { replaceToday() }
             Button("取消", role: .cancel) {}
         }
     }
@@ -2583,7 +2583,6 @@ struct ChatView: View {
 
     private var detectedCard: some View {
         let selected = detectedTasks.filter { selectedAIIDs.contains($0.id) }
-        let completed = store.visibleTasks.filter { store.isDone($0) }
         return VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Label("候选计划 · 已选 \(selected.count)/\(detectedTasks.count)", systemImage: "checklist")
@@ -2596,9 +2595,7 @@ struct ChatView: View {
                 .buttonStyle(.link)
                 .font(.system(size: 10))
             }
-            Text(completed.isEmpty
-                 ? "AI 只会应用你勾选的候选任务。"
-                 : "当前已有 \(completed.count) 项已完成任务，整表替换不会删除它们。")
+            Text("两种应用方式：「追加」保留当前 \(store.visibleTasks.count) 项任务不变；「替换」清空当前清单的全部任务（含已完成），只用选中的候选。")
                 .font(.system(size: 9.5))
                 .foregroundColor(.secondary)
             ForEach(detectedTasks) { task in
@@ -2635,18 +2632,19 @@ struct ChatView: View {
             }
             HStack(spacing: 10) {
                 Button(action: applySelectedAI) {
-                    Label("应用选中", systemImage: "checkmark.circle.fill")
+                    Label("追加到当前清单", systemImage: "plus.circle.fill")
                         .font(.system(size: 11, weight: .semibold))
                 }
                 .buttonStyle(.link)
                 .disabled(selected.isEmpty)
+                .help("保留当前全部任务，把选中的候选追加进去")
                 Button(action: requestReplaceToday) {
-                    Label("替换未完成项", systemImage: "arrow.triangle.2.circlepath.circle")
+                    Label("替换全部任务", systemImage: "arrow.triangle.2.circlepath.circle")
                         .font(.system(size: 10.5))
                 }
                 .buttonStyle(.link)
                 .disabled(selected.isEmpty)
-                .help("保留已完成任务，用选中候选替换当前未完成任务")
+                .help("清空当前清单的全部任务（含已完成），只用选中的候选")
                 Button(role: .destructive) {
                     detectedTasks = []
                     selectedAIIDs = []
@@ -2813,10 +2811,11 @@ struct ChatView: View {
         }
     }
 
-    /// 保留今天已完成任务，用选中候选替换未完成项。
+    /// 替换全部：清空当前清单（含已完成），只用选中候选。
     private func replaceToday() {
+        store.lastOperationError = nil
         withDDAnimation {
-            store.replaceUnfinished(with: selectedAIPayload(), preserveCompleted: true)
+            store.replaceAll(with: selectedAIPayload())
         }
         if store.lastOperationError == nil {
             detectedTasks = []
@@ -2826,8 +2825,9 @@ struct ChatView: View {
         }
     }
 
-    /// 应用选中候选：只追加，不改现有任务。
+    /// 追加选中候选：保留当前全部任务，只把勾选项加进去。
     private func applySelectedAI() {
+        store.lastOperationError = nil
         withDDAnimation {
             for task in detectedTasks where selectedAIIDs.contains(task.id) {
                 let minutes = task.remindAt.flatMap { AIClient.minutes(fromHHMM: $0) }
