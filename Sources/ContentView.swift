@@ -1854,7 +1854,7 @@ struct SettingsView: View {
                     case .data:
                         maintenanceGroup
                         backupGroup
-                        Text("DeskDaily v1.7 · 数据保存在本机\n~/Library/Application Support/DeskDaily/")
+                        Text("DeskDaily v2.2.0 · 数据保存在本机\n~/Library/Application Support/DeskDaily/")
                             .font(.system(size: 9.5))
                             .foregroundColor(.secondary)
                             .frame(maxWidth: .infinity, alignment: .center)
