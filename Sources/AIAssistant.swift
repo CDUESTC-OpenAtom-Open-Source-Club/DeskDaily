@@ -63,12 +63,14 @@ struct AITask: Identifiable, Equatable {
 enum AIError: LocalizedError {
     case badURL
     case emptyReply
+    case invalidTaskPayload
     case http(Int, String)
 
     var errorDescription: String? {
         switch self {
         case .badURL: return "接口地址无效，请到设置里检查"
         case .emptyReply: return "模型没有返回内容"
+        case .invalidTaskPayload: return "模型返回的任务格式无法识别，请重试"
         case .http(let code, let message): return "接口错误 \(code)：\(message)"
         }
     }
@@ -114,6 +116,38 @@ final class AIClient {
             throw AIError.emptyReply
         }
         return content
+    }
+
+    /// 只保留给用户看的自然语言，隐藏模型偶尔夹带的 JSON/代码块。
+    static func displayText(from text: String) -> String {
+        var result = text
+        if let start = result.range(of: "```json", options: [.caseInsensitive]),
+           let end = result.range(of: "```", range: start.upperBound..<result.endIndex) {
+            result.removeSubrange(start.lowerBound..<end.upperBound)
+        }
+        if let first = result.firstIndex(of: "["), let last = result.lastIndex(of: "]"), first < last {
+            let candidate = String(result[first...last])
+            if let data = candidate.data(using: .utf8),
+               (try? JSONSerialization.jsonObject(with: data)) != nil {
+                result.removeSubrange(first...last)
+            }
+        }
+        result = result.replacingOccurrences(of: "```", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return result.isEmpty ? "我已经整理好这份安排，确认后可以生成任务候选。" : result
+    }
+
+    /// 后台专用：只返回结构化候选，不进入聊天记录。
+    func generateTaskCandidates(context: [ChatMessage], settings: AppSettings, apiKey: String, timeout: TimeInterval = 60) async throws -> [AITask] {
+        let system = """
+        你是 DeskDaily 的结构化任务生成器。根据下面已经确认的自然语言日程，严格只输出 JSON 数组，不要输出解释、Markdown 或代码围栏。
+        每项必须包含 title、remindAt（HH:mm 或 null）、repeatDaily（true/false）；可选 durationMinutes（整数分钟）。
+        输出格式：[{\"title\":\"任务\",\"remindAt\":\"09:00\",\"repeatDaily\":false,\"durationMinutes\":30}]
+        """
+        let response = try await chat(system: system, messages: context, settings: settings, apiKey: apiKey, timeout: timeout)
+        let tasks = Self.parseTasks(from: response)
+        guard !tasks.isEmpty else { throw AIError.invalidTaskPayload }
+        return tasks
     }
 
     /// 从模型回复中提取任务清单（三层兜底）：

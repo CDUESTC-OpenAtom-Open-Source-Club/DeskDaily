@@ -2358,7 +2358,7 @@ struct ChatView: View {
     @State private var errorMessage: String?
     @State private var detectedTasks: [AITask] = []
     @State private var selectedAIIDs: Set<UUID> = []
-    @State private var showNoTasksHint = false
+    @State private var showGenerateCandidates = false
     @State private var confirmReplace = false
 
     init(session: ChatSession, onClose: @escaping () -> Void = {}) {
@@ -2400,26 +2400,8 @@ struct ChatView: View {
                         if !detectedTasks.isEmpty {
                             detectedCard
                         }
-                        if showNoTasksHint && detectedTasks.isEmpty && !isWaiting {
-                            HStack(spacing: 8) {
-                                Image(systemName: "questionmark.circle")
-                                    .font(.system(size: 12))
-                                    .foregroundColor(.secondary)
-                                Text("未识别到可导入的任务清单")
-                                    .font(.system(size: 10.5))
-                                    .foregroundColor(.secondary)
-                                Spacer()
-                                Button(action: requestJsonList) {
-                                    Label("让 AI 重新输出清单", systemImage: "arrow.triangle.2.circlepath")
-                                        .font(.system(size: 10.5, weight: .semibold))
-                                }
-                                .buttonStyle(.link)
-                            }
-                            .padding(8)
-                            .background(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .fill(Color.secondary.opacity(0.08))
-                            )
+                        if showGenerateCandidates && detectedTasks.isEmpty && !isWaiting {
+                            generateCandidateCard
                         }
                         Color.clear.frame(height: 1).id("bottom")
                     }
@@ -2443,6 +2425,12 @@ struct ChatView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .overlay(Rectangle().stroke(Color.primary.opacity(0.10), lineWidth: 1))
         .onAppear(perform: autoSendPending)
+        .onReceive(session.$candidatePhase) { phase in
+            if case .failed(let message) = phase {
+                isWaiting = false
+                errorMessage = message
+            }
+        }
         .confirmationDialog("将用 AI 候选替换当前 \(store.visibleTasks.filter { !store.isDone($0) }.count) 项未完成任务；\(store.visibleTasks.filter { store.isDone($0) }.count) 项已完成任务会保留。确定吗？",
                             isPresented: $confirmReplace, titleVisibility: .visible) {
             Button("替换为 \(selectedAIIDs.count) 项候选任务", role: .destructive) { replaceToday() }
@@ -2479,9 +2467,15 @@ struct ChatView: View {
             }
             Spacer()
             Button {
+                messages = []
+                detectedTasks = []
+                selectedAIIDs = []
+                showGenerateCandidates = false
+                errorMessage = nil
                 session.draft = ""
                 store.chatDraft = ""
                 store.chatHistory = []
+                session.clearCandidatePlan()
             } label: {
                 Image(systemName: "plus.bubble")
                     .font(.system(size: 13))
@@ -2531,10 +2525,12 @@ struct ChatView: View {
     @ViewBuilder
     private func bubble(_ message: ChatMessage) -> some View {
         let isUser = message.role == "user"
+        // 显示层最后防线：即使有遗漏路径写入了结构化内容，也不渲染 JSON
+        let visibleContent = isUser ? message.content : AIClient.displayText(from: message.content)
         HStack {
             if isUser { Spacer(minLength: 24) }
             // 行内 Markdown 渲染（加粗/行内代码/链接等），解析失败自动降级纯文本
-            Text(markdownInline(message.content))
+            Text(markdownInline(visibleContent))
                 .font(.system(size: 12))
                 .foregroundColor(isUser ? .white : .primary)
                 .textSelection(.enabled)
@@ -2549,13 +2545,40 @@ struct ChatView: View {
                 .contextMenu {
                     Button {
                         NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(message.content, forType: .string)
+                        NSPasteboard.general.setString(visibleContent, forType: .string)
                     } label: {
                         Label("复制整条消息", systemImage: "doc.on.doc")
                     }
                 }
             if !isUser { Spacer(minLength: 24) }
         }
+    }
+
+    private var generateCandidateCard: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checklist")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Accent.gradient)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("这份安排可以吗？")
+                    .font(.system(size: 11.5, weight: .semibold))
+                Text("确认后生成可选择的任务列表，不会把技术数据显示在对话中。")
+                    .font(.system(size: 9.5))
+                    .foregroundColor(.secondary)
+            }
+            Spacer(minLength: 4)
+            Button {
+                generateCandidates()
+            } label: {
+                Label("确认并生成", systemImage: "sparkles")
+                    .font(.system(size: 10.5, weight: .semibold))
+            }
+            .buttonStyle(.link)
+            .disabled(!configured)
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Accent.start.opacity(0.08)))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Accent.start.opacity(0.22), lineWidth: 1))
     }
 
     private var detectedCard: some View {
@@ -2666,12 +2689,18 @@ struct ChatView: View {
         guard !text.isEmpty, configured, !isWaiting else { return }
         session.draft = ""
         store.chatDraft = ""
+        showGenerateCandidates = false
+        detectedTasks = []
+        selectedAIIDs = []
         messages.append(ChatMessage(role: "user", content: text))
         fetchReply()
     }
 
     private func quickStart() {
         guard configured, !isWaiting else { return }
+        showGenerateCandidates = false
+        detectedTasks = []
+        selectedAIIDs = []
         messages.append(ChatMessage(role: "user", content: "帮我规划一下今天的任务安排"))
         fetchReply()
     }
@@ -2680,9 +2709,11 @@ struct ChatView: View {
         isWaiting = true
         aiStage = "正在连接模型…"
         errorMessage = nil
-        // 新请求不能留下上一轮可点击的候选，避免误应用旧清单。
+        // 新对话轮次作废旧候选，避免误应用上一轮清单。
         detectedTasks = []
-        showNoTasksHint = false
+        selectedAIIDs = []
+        session.cancelCandidateGeneration()
+        showGenerateCandidates = false
         let history = messages
         let system = systemPrompt
         let settings = store.settings
@@ -2690,28 +2721,31 @@ struct ChatView: View {
             do {
                 let reply = try await AIClient.shared.chat(system: system, messages: history, settings: settings,
                                                             apiKey: store.apiKey)
-                messages.append(ChatMessage(role: "assistant", content: reply))
-                aiStage = "正在解析候选任务…"
-                detectedTasks = AIClient.parseTasks(from: reply)
-                selectedAIIDs = Set(detectedTasks.map(\.id))
-                showNoTasksHint = detectedTasks.isEmpty
+                let visibleReply = AIClient.displayText(from: reply)
+                messages.append(ChatMessage(role: "assistant", content: visibleReply))
+                showGenerateCandidates = true
                 isWaiting = false
                 if store.settings.memoryEnabled {
                     extractMemories()
                 }
             } catch {
-                detectedTasks = []
-                showNoTasksHint = false
                 errorMessage = error.localizedDescription
                 isWaiting = false
             }
         }
     }
 
-    /// 恢复上次的对话记录
+    /// 恢复上次的对话记录（旧版本可能在历史里留下 JSON，恢复时一并清理）
     private func restoreHistory() {
-        if messages.isEmpty, !store.chatHistory.isEmpty {
-            messages = store.chatHistory
+        guard messages.isEmpty, !store.chatHistory.isEmpty else { return }
+        let cleaned = store.chatHistory.map { message in
+            message.role == "assistant"
+                ? ChatMessage(role: message.role, content: AIClient.displayText(from: message.content))
+                : message
+        }
+        messages = cleaned
+        if cleaned != store.chatHistory {
+            store.chatHistory = cleaned
         }
     }
 
@@ -2741,13 +2775,25 @@ struct ChatView: View {
         }
     }
 
-    /// 模型没按要求输出清单时，一键要求它补发标准格式
-    private func requestJsonList() {
-        guard !isWaiting, configured else { return }
-        messages.append(ChatMessage(
-            role: "user",
-            content: "请把最终的任务清单用 ```json 代码块重新输出一次，每个对象必须包含 title、remindAt（\"HH:mm\" 或 null）、repeatDaily（true/false）三个字段，代码块后不要再有其他内容。"))
-        fetchReply()
+    /// 确认自然语言安排后，后台请求结构化候选；JSON 不进入聊天记录。
+    private func generateCandidates() {
+        guard configured, !isWaiting else { return }
+        let context = messages
+        let settings = store.settings
+        let apiKey = store.apiKey
+        showGenerateCandidates = false
+        detectedTasks = []
+        selectedAIIDs = []
+        isWaiting = true
+        aiStage = "正在生成任务候选…"
+        errorMessage = nil
+        session.startCandidateGeneration(context: context, settings: settings, apiKey: apiKey) { tasks in
+            isWaiting = false
+            withDDAnimation {
+                detectedTasks = tasks
+                selectedAIIDs = Set(tasks.map(\.id))
+            }
+        }
     }
 
     private func requestReplaceToday() {
@@ -2814,14 +2860,11 @@ struct ChatView: View {
         return """
         你是 DeskDaily 桌面清单的 AI 规划助手，帮用户规划今天（\(header.date) \(header.weekday)，现在 \(store.clockString())）的安排。
         对话规则：先简要了解用户今天的目标与空闲时段（总共不超过 3 个问题，每轮最多 2 个），语气简洁友好，不要长篇大论。
-        信息足够后，给出简短的今日计划说明，并在最后单独输出 ```json 代码块。
-        每个对象必须包含 title、remindAt、repeatDaily 三个字段（缺一不可，remindAt 没有就写 null）；如果是占用一段时间的事情，可加 durationMinutes（整数分钟）。格式示例：
-        [{"title":"晨间锻炼","remindAt":"07:30","repeatDaily":false},{"title":"睡前阅读 20 分钟","remindAt":"22:00","repeatDaily":false,"durationMinutes":20}]
-        要求：任务 3-8 条、按时间先后排序、时间用 24 小时制；代码块之后不要再输出任何内容。
+        信息足够后，用自然语言给出按时间排序的今日安排建议（每行一条，写清建议时间和大概时长），然后询问用户是否确认这份安排。
+        严格禁止输出 JSON、代码块、字段名、表格或任何机器可读格式；只使用普通中文对话。
         关于用户的长期记忆（规划时参考，让方案更贴合用户）：
         \(memoryText.isEmpty ? "（暂无）" : memoryText)
         用户当前的清单（每轮对话都同步最新状态，✓ 表示已完成）：\(existing.isEmpty ? "（暂无）" : existing)
-        重要：你的输出将「整体替换」用户当前清单。请基于现有清单优化调整——该保留的保留、该调整的改时间改名称、多余的去掉，最终给出完整的新清单（不要只给增量）。
         """
     }
 }
