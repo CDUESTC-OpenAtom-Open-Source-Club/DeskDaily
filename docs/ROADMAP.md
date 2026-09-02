@@ -11,7 +11,7 @@
 ## v2.3 传播版 —— 让别人 30 秒看懂它
 
 - [x] README 接入品牌横幅与「界面预览」区（横幅已就位）
-- [ ] 🔒 采集真实运行截图 5 张（overview-main / ai-planner / statistics-heatmap / template-catalog / focus-mode，可用设置页「载入演示数据」准备画面），替换 README 与 SHOWCASE 中的占位
+- [x] 界面截图 5 张已生成（overview-main / ai-planner / statistics-heatmap / template-catalog / focus-mode）：由应用自身在演示数据模式下自动渲染（`DD_EXPORT_SHOTS=1`），全部为真实界面代码产出
 - [x] 首次启动引导卡：三步图解（勾选任务 / 设提醒 / 拖动位置），点「开始使用」后再请求通知权限
 - [x] 演示数据模式：`DD_DEMO=1` 全新启动自动载入演示任务；设置 → 数据 →「载入演示数据…」随时可换
 - [x] 模板入口提升：计划表栏增加明显的「模板」按钮，新用户能发现内置模板

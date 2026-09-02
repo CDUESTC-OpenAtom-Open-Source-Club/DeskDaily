@@ -70,4 +70,19 @@ backup-settings.png
 
 截图直接随 Git 提交，README 与 `docs/SHOWCASE.md` 使用相对路径。Release 只放安装包和校验文件；如果需要分享原始高清截图，可另附 `DeskDaily-screenshots-vX.Y.zip`，但不能让 README 依赖 Release 附件才能显示图片。
 
-当前仓库暂时只有不含个人信息的应用图标，真实运行截图待在干净演示环境制作后补入。不要用代码生成的 UI 预览冒充真实运行截图。
+## 自动渲染导出（当前采用的方式）
+
+界面预览图由**应用自身**在演示数据模式下渲染导出——运行真实界面代码（SwiftUI 视图），使用虚构演示任务与回填的历史数据，离屏输出 2x PNG。这不是手绘 mockup，也不含任何真实个人信息：
+
+```bash
+DD_DATA_DIR=/tmp/ddshots DD_DEMO=1 DD_EXPORT_SHOTS=1 \
+DD_TIME_SHIFT_MINUTES=640 DD_SHOTS_DIR="$PWD/docs/assets/screenshots" \
+build/DeskDaily.app/Contents/MacOS/DeskDaily
+```
+
+- `DD_DEMO=1`：全新数据目录载入虚构演示任务
+- `DD_EXPORT_SHOTS=1`：渲染 5 张界面图后自动退出
+- `DD_TIME_SHIFT_MINUTES=640`：把"现在"平移到下午，让截图呈现进行中状态
+- `DD_SHOTS_DIR`：输出目录
+
+注意：如果未来 UI 有明显变化，重新运行上面的命令即可整批更新；不要在导出数据目录里放真实任务或 Key。

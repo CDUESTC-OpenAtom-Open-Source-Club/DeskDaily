@@ -400,6 +400,11 @@ struct StatisticsView: View {
     @State private var toast: String? = nil
     @State private var toastToken = 0
 
+    init() {
+        // 打开即有数据（离屏渲染 / 真实首帧不空白），onAppear 再按最新状态刷新
+        _snapshot = State(initialValue: Store.shared.buildStatsSnapshot())
+    }
+
     private var aiConfigured: Bool {
         !store.settings.aiBaseURL.trimmingCharacters(in: .whitespaces).isEmpty
             && !store.settings.aiModel.trimmingCharacters(in: .whitespaces).isEmpty

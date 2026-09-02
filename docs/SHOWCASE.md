@@ -122,18 +122,18 @@ AI 配置支持智谱 GLM、DeepSeek 和 Ollama 等 OpenAI 兼容服务：
 
 ## 截图索引
 
-仓库暂时只提交了不含个人信息的应用图标。真实运行截图会按以下顺序补充到 `docs/assets/screenshots/`，并在每张图旁记录对应版本：
+界面截图由应用自身在演示数据模式下自动渲染（`DD_EXPORT_SHOTS=1`，均为真实界面代码产出），存放在 `docs/assets/screenshots/`，每张图对应的功能如下：
 
 | 文件 | 展示内容 | 状态 |
 |---|---|---|
-| `overview-main.png` | 主卡片、今日任务和进度环 | 待在干净演示环境截图 |
-| `task-creation.png` | 自然语言添加、时间和时长 | 待截图 |
-| `ai-planner.png` | AI 对话与任务确认卡片 | 待截图，使用虚构数据 |
-| `settings-ai.png` | AI 服务预设与测试连接 | 待截图，Key 必须为空 |
-| `statistics-heatmap.png` | 热力图、统计卡片和周报 | 待截图 |
-| `focus-mode.png` | 番茄钟专注条 | 待截图 |
-| `capsule-collapsed.png` | 迷你折叠胶囊 | 待截图 |
-| `menubar-quick-actions.png` | 菜单栏任务入口 | 待截图 |
+| `overview-main.png` | 主卡片、今日任务、进度环与现在线 | 已生成 |
+| `task-creation.png` | 自然语言添加、时间和时长 | 可选补充 |
+| `ai-planner.png` | AI 对话与自然语言日程建议 | 已生成 |
+| `settings-ai.png` | AI 服务预设与测试连接 | 可选补充 |
+| `statistics-heatmap.png` | 热力图、统计卡片和周报 | 已生成 |
+| `focus-mode.png` | 番茄钟专注条 | 已生成 |
+| `template-catalog.png` | 内置模板目录与作息变量 | 已生成 |
+| `menubar-quick-actions.png` | 菜单栏任务入口 | 可选补充 |
 
 截图制作和审查规则见 [截图与发布规范](SCREENSHOTS.md)。
 

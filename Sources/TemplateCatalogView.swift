@@ -12,6 +12,12 @@ struct TemplateCatalogView: View {
     @State private var errorMessage: String?
     @State private var successMessage: String?
 
+    init() {
+        // 默认全选首个模板的任务（离屏渲染与真实首帧都直接可用）
+        let first = BuiltInTemplate.all.first(where: { $0.audience == .student })
+        _selectedTaskIDs = State(initialValue: Set(first?.tasks.map(\.id) ?? []))
+    }
+
     private var templates: [BuiltInTemplate] { BuiltInTemplate.all.filter { $0.audience == audience } }
     private var template: BuiltInTemplate { templates.first(where: { $0.id == selectedID }) ?? templates[0] }
     private var resolved: [TaskItem] { (try? store.builtInTasks(template: template, variables: variables, selectedIDs: selectedTaskIDs)) ?? [] }

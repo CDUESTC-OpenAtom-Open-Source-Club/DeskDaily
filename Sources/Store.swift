@@ -1377,6 +1377,29 @@ final class Store: ObservableObject {
         ]
     }
 
+    /// 截图导出用：给当前表演示任务回填约 5 周历史完成记录（固定伪随机，图像可复现）
+    func backfillDemoHistory(days: Int = 35) {
+        var seed: UInt64 = 20260902
+        func rand() -> Double {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return Double((seed >> 33) & 0x7fffffff) / Double(0x7fffffff)
+        }
+        guard let i = activeIndex else { return }
+        for j in sheets[i].tasks.indices {
+            let task = sheets[i].tasks[j]
+            var key = currentDay
+            var steps = 0
+            while steps < days, let prev = dayKey(byAddingDays: -1, toKey: key) {
+                key = prev
+                steps += 1
+                guard task.repeatRule.isActive(on: key, weekday: weekday(ofDayKey: key)) else { continue }
+                if rand() < 0.72 {
+                    sheets[i].tasks[j].doneDays.insert(key)
+                }
+            }
+        }
+    }
+
     /// 设置页「载入演示数据」：把当前计划表整体替换为演示任务（校验后一次写入）。
     /// 前两项按应用当前时区标记为今天已完成，截图能看到勾选态与进度环。
     func loadDemoData() {

@@ -18,24 +18,22 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Swift](https://img.shields.io/badge/swift-5-orange)
 
-> 当前仓库已提交品牌横幅与应用图标作为视觉资产；真实运行截图会在干净演示环境制作后放入 [`docs/assets/screenshots/`](docs/assets/screenshots/)，不使用伪造截图。
+> 界面截图由应用自身在演示数据模式下自动渲染（`DD_EXPORT_SHOTS=1`），均为真实界面代码产出；制作规范见 [`docs/SCREENSHOTS.md`](docs/SCREENSHOTS.md)。
 
 ## 界面预览
 
-<!-- 真实截图就位后取消注释（文件名见 docs/SCREENSHOTS.md，需使用虚构演示数据）：
 <p align="center">
-  <img src="docs/assets/screenshots/overview-main.png" alt="主卡片：今日任务、进度环与计划表切换" width="32%">
+  <img src="docs/assets/screenshots/overview-main.png" alt="主卡片：今日任务、进度环、现在线与进行中的时段任务" width="30%">
   &nbsp;
-  <img src="docs/assets/screenshots/ai-planner.png" alt="AI 日程规划：自然语言对话与候选任务确认" width="32%">
+  <img src="docs/assets/screenshots/ai-planner.png" alt="AI 日程规划：自然语言对话给出安排建议" width="30%">
   &nbsp;
-  <img src="docs/assets/screenshots/statistics-heatmap.png" alt="统计页：26 周热力图与每周复盘" width="32%">
+  <img src="docs/assets/screenshots/statistics-heatmap.png" alt="统计页：三张统计卡片与最近 26 周热力图" width="30%">
 </p>
 <p align="center">
-  <img src="docs/assets/screenshots/template-catalog.png" alt="内置模板目录：学生与工作者日程模板" width="49%">
+  <img src="docs/assets/screenshots/template-catalog.png" alt="内置模板目录：学生/工作者模板、作息变量与任务勾选" width="46%">
   &nbsp;
-  <img src="docs/assets/screenshots/focus-mode.png" alt="番茄钟专注条与迷你胶囊" width="49%">
+  <img src="docs/assets/screenshots/focus-mode.png" alt="番茄钟专注条与进行中的时段任务" width="46%">
 </p>
--->
 
 ## 快速了解
 

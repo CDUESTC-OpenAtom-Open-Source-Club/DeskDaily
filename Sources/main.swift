@@ -49,11 +49,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Notify.registerCategories()
         Notify.center?.delegate = NotificationDelegate.shared
         let store = Store.shared
+        let exporting = ProcessInfo.processInfo.environment["DD_EXPORT_SHOTS"] == "1"
         // 首次启动先展示引导卡，点「开始使用」后再请求通知权限（不打扰新用户）
-        if store.settings.onboardingDone {
+        if store.settings.onboardingDone, !exporting {
             Notify.requestAuth()
         }
         store.refreshNotificationSchedule()
+        if exporting {
+            // 截图导出模式：渲染完 5 张界面图后自动退出
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                ShotExporter.exportAll()
+                exit(0)
+            }
+            return
+        }
         WindowController.shared.setup()
         // 全局热键 / 菜单栏迷你入口（按设置开关）
         Hotkey.setEnabled(store.settings.globalHotkey)

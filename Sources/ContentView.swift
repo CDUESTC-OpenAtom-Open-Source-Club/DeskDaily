@@ -2479,6 +2479,8 @@ struct ChatView: View {
     init(session: ChatSession, onClose: @escaping () -> Void = {}) {
         self.session = session
         self.onClose = onClose
+        // 初始化即恢复历史（离屏渲染与真实首帧都不空白）
+        _messages = State(initialValue: Store.shared.chatHistory)
     }
 
     private var configured: Bool {
