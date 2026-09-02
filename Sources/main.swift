@@ -49,7 +49,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Notify.registerCategories()
         Notify.center?.delegate = NotificationDelegate.shared
         let store = Store.shared
-        Notify.requestAuth()
+        // 首次启动先展示引导卡，点「开始使用」后再请求通知权限（不打扰新用户）
+        if store.settings.onboardingDone {
+            Notify.requestAuth()
+        }
         store.refreshNotificationSchedule()
         WindowController.shared.setup()
         // 全局热键 / 菜单栏迷你入口（按设置开关）

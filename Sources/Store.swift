@@ -101,11 +101,14 @@ struct AppSettings: Codable, Equatable {
     var idleFadeSeconds: Int = 90
     // Dock 图标显示今日未完成数徽标
     var dockBadge: Bool = true
+    // 首次启动引导：完成后才请求通知权限
+    var onboardingDone: Bool = false
 
     private enum CodingKeys: String, CodingKey {
         case tzMode, windowMode, progressMode, soundOn, notifOn, windowFrame
         case aiBaseURL, aiModel, apiKey, memoryEnabled, migratedFloating, reviewTime
         case globalHotkey, statusBarIcon, collapsed, idleFade, idleFadeSeconds, dockBadge
+        case onboardingDone
     }
 
     init() {}
@@ -131,6 +134,7 @@ struct AppSettings: Codable, Equatable {
         idleFade = try c.decodeIfPresent(Bool.self, forKey: .idleFade) ?? true
         idleFadeSeconds = try c.decodeIfPresent(Int.self, forKey: .idleFadeSeconds) ?? 90
         dockBadge = try c.decodeIfPresent(Bool.self, forKey: .dockBadge) ?? true
+        onboardingDone = try c.decodeIfPresent(Bool.self, forKey: .onboardingDone) ?? false
     }
     // API Key 仅为兼容旧文件读取；编码时永不写入普通 JSON。
     func encode(to encoder: Encoder) throws {
@@ -530,7 +534,9 @@ final class Store: ObservableObject {
         apiKey = (try? KeychainStore.shared.read()) ?? ""
         var resolvedSheets = loaded.sheets
         if resolvedSheets.isEmpty {
-            let seed = loaded.lastSeenDay.isEmpty ? Store.seedTasks() : []
+            // DD_DEMO=1 时用适合截图的演示任务替代默认种子（仅全新数据生效）
+            let useDemo = ProcessInfo.processInfo.environment["DD_DEMO"] == "1"
+            let seed = loaded.lastSeenDay.isEmpty ? (useDemo ? Store.demoTasks() : Store.seedTasks()) : []
             resolvedSheets = [PlanSheet(name: "今日计划", colorHex: "8B5CF6", tasks: seed)]
         }
         sheets = resolvedSheets
@@ -1357,5 +1363,42 @@ final class Store: ObservableObject {
             TaskItem(title: "运动半小时", remindAt: 18 * 60 + 30, durationMinutes: 30),
             TaskItem(title: "睡前阅读 20 分钟", remindAt: 22 * 60, durationMinutes: 20)
         ]
+    }
+
+    /// 演示任务（虚构内容，用于截图与展示；覆盖各类任务形态）
+    static func demoTasks() -> [TaskItem] {
+        [
+            TaskItem(title: "晨间站会", remindAt: 9 * 60, durationMinutes: 15, repeatRule: RepeatRule(), createdOn: ""),
+            TaskItem(title: "产品评审：桌面清单 v2.3", remindAt: 10 * 60 + 30, durationMinutes: 45, repeatRule: .weekly([2, 3, 4, 5, 6]), createdOn: "", starred: true),
+            TaskItem(title: "专注开发：性能优化", remindAt: 14 * 60, durationMinutes: 90, repeatRule: .weekly([2, 3, 4, 5, 6]), createdOn: ""),
+            TaskItem(title: "回复合作邮件", remindAt: 16 * 60 + 30, durationMinutes: 30, repeatRule: RepeatRule(), createdOn: ""),
+            TaskItem(title: "健身房力量训练", remindAt: 18 * 60, durationMinutes: 60, repeatRule: .weekly([2, 4, 6]), createdOn: ""),
+            TaskItem(title: "睡前阅读《置身事内》", remindAt: 22 * 60, durationMinutes: 20, repeatRule: RepeatRule(), createdOn: "")
+        ]
+    }
+
+    /// 设置页「载入演示数据」：把当前计划表整体替换为演示任务（校验后一次写入）。
+    /// 前两项按应用当前时区标记为今天已完成，截图能看到勾选态与进度环。
+    func loadDemoData() {
+        var items = Store.demoTasks()
+        for i in 0..<min(2, items.count) {
+            items[i].doneDays.insert(currentDay)
+            items[i].createdOn = currentDay
+        }
+        for i in 2..<items.count {
+            items[i].createdOn = currentDay
+        }
+        guard let active = activeSheet else { return }
+        var candidate = active
+        candidate.tasks = items
+        do {
+            _ = try AppDataValidator.validate(AppData(settings: settings, sheets: sheets.map { $0.id == active.id ? candidate : $0 },
+                                                     activeSheetId: activeSheetId, lastSeenDay: currentDay,
+                                                     memories: memories, chatHistory: chatHistory,
+                                                     chatDraft: chatDraft, templates: templates))
+            mutateActiveTasks { $0 = items }
+        } catch {
+            lastOperationError = error.localizedDescription
+        }
     }
 }

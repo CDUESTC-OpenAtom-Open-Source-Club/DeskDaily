@@ -187,6 +187,72 @@ struct HeightKey: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value += nextValue() }
 }
 
+/// 首次启动引导卡：三步图解，点「开始使用」后开始正常使用并请求通知权限
+struct OnboardingView: View {
+    let onBegin: () -> Void
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "wand.and.stars")
+                .font(.system(size: 30))
+                .foregroundStyle(Accent.gradient)
+            VStack(spacing: 4) {
+                Text("欢迎使用 DeskDaily")
+                    .font(.system(size: 15, weight: .bold))
+                Text("三步上手，管理你的一天")
+                    .font(.system(size: 10.5))
+                    .foregroundColor(.secondary)
+            }
+            VStack(spacing: 10) {
+                onboardingStep(icon: "checkmark.circle.fill", tint: .green,
+                               title: "点圆圈勾选任务", detail: "完成一项点亮一项，进度环实时变化")
+                onboardingStep(icon: "clock.badge.checkmark", tint: Accent.start,
+                               title: "给任务设提醒", detail: "支持时段：开始和结束时各提醒一次")
+                onboardingStep(icon: "hand.draw", tint: Accent.end,
+                               title: "按住卡片拖到顺手的位置", detail: "靠近屏幕边缘会自动吸附；双击标题可折叠")
+            }
+            Button(action: onBegin) {
+                Label("开始使用", systemImage: "sparkles")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 26)
+                    .padding(.vertical, 9)
+                    .background(Capsule().fill(Accent.gradient))
+            }
+            .buttonStyle(.plain)
+            .hoverPointing()
+            Text("开始后将请求通知权限（用于提醒）\n已预置示例任务，可随时删除或载入演示数据")
+                .font(.system(size: 9))
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(.horizontal, 20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.92))
+    }
+
+    private func onboardingStep(icon: String, tint: Color, title: String, detail: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 15))
+                .foregroundColor(tint)
+                .frame(width: 30, height: 30)
+                .background(Circle().fill(tint.opacity(0.12)))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                Text(detail)
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 11).fill(Color.primary.opacity(0.05)))
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject var store: Store
     @State private var newTitle = ""
@@ -233,6 +299,15 @@ struct ContentView: View {
             } else {
                 expandedCard
                     .transition(.opacity)
+            }
+            // 首次启动引导：覆盖整卡，完成前不请求通知权限
+            if !store.settings.onboardingDone {
+                OnboardingView {
+                    withDDAnimation { store.settings.onboardingDone = true }
+                    Notify.requestAuth()
+                }
+                .transition(.opacity)
+                .zIndex(10)
             }
         }
         .animation(ddAnimation, value: store.settings.collapsed)
@@ -530,10 +605,28 @@ struct ContentView: View {
             .popover(isPresented: $showSheetEditor, arrowEdge: .bottom) {
                 SheetEditorView(isNew: sheetEditorIsNew)
             }
+            Spacer()
+            Button {
+                activateApp()
+                templateCatalogOpen = true
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "square.grid.2x2")
+                        .font(.system(size: 9, weight: .semibold))
+                    Text("模板")
+                        .font(.system(size: 10, weight: .medium))
+                }
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(Color.primary.opacity(0.05)))
+            }
+            .buttonStyle(.plain)
+            .hoverPointing()
+            .help("内置学生 / 工作者日程模板")
             .popover(isPresented: $templateCatalogOpen, arrowEdge: .bottom) {
                 TemplateCatalogView()
             }
-            Spacer()
             Button {
                 statsOpen = true
             } label: {
@@ -1679,6 +1772,7 @@ struct SettingsView: View {
     let onClose: () -> Void
     @State private var loginEnabled = false
     @State private var confirmClearAll = false
+    @State private var confirmDemo = false
     @State private var testing = false
     @State private var testResult: String?
     @State private var testSuccess = false
@@ -1690,6 +1784,11 @@ struct SettingsView: View {
 
     init(onClose: @escaping () -> Void = {}) {
         self.onClose = onClose
+    }
+
+    /// 版本号单一来源：读取应用 Info.plist，消除与打包版本的手动同步
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
     }
 
     private var apiKeyBinding: Binding<String> {
@@ -1854,7 +1953,7 @@ struct SettingsView: View {
                     case .data:
                         maintenanceGroup
                         backupGroup
-                        Text("DeskDaily v2.2.1 · 数据保存在本机\n~/Library/Application Support/DeskDaily/")
+                        Text("DeskDaily v\(appVersion) · 数据保存在本机\n~/Library/Application Support/DeskDaily/")
                             .font(.system(size: 9.5))
                             .foregroundColor(.secondary)
                             .frame(maxWidth: .infinity, alignment: .center)
@@ -1889,6 +1988,17 @@ struct SettingsView: View {
         .confirmationDialog("确定要清空「\(store.activeSheetName)」的全部任务吗？此操作不可恢复。",
                             isPresented: $confirmClearAll, titleVisibility: .visible) {
             Button("清空所有任务", role: .destructive) { withDDAnimation { store.clearAll() } }
+            Button("取消", role: .cancel) {}
+        }
+        .confirmationDialog("将把「\(store.activeSheetName)」整体替换为 6 项演示任务（原任务会被清除）。继续吗？",
+                            isPresented: $confirmDemo, titleVisibility: .visible) {
+            Button("载入演示数据", role: .destructive) {
+                withDDAnimation { store.loadDemoData() }
+                if let error = store.lastOperationError {
+                    backupError = true
+                    backupMessage = error
+                }
+            }
             Button("取消", role: .cancel) {}
         }
         .confirmationDialog(importConfirmText, isPresented: $confirmImport, titleVisibility: .visible) {
@@ -2181,7 +2291,12 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.link)
                 .font(.system(size: 12))
-                Text("重置只清今天的完成状态；清空会删除当前计划表的全部任务（可用 ⌘Z 撤销）。")
+                Button { confirmDemo = true } label: {
+                    Label("载入演示数据…", systemImage: "photo.on.rectangle")
+                }
+                .buttonStyle(.link)
+                .font(.system(size: 12))
+                Text("重置只清今天的完成状态；清空会删除当前计划表的全部任务（可用 ⌘Z 撤销）；演示数据会整体替换当前表，适合截图与体验。")
                     .font(.system(size: 9.5))
                     .foregroundColor(.secondary)
             }
