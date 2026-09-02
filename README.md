@@ -3,14 +3,14 @@
 原生 macOS 桌面日程清单：把今天的任务、提醒、专注和复盘放在一张可交互的小卡片里。
 
 <p align="center">
-  <img src="docs/assets/deskdaily-icon.png" alt="DeskDaily 应用图标：渐变背景上的清单卡片与时钟" width="180">
+  <img src="docs/assets/banner.png" alt="DeskDaily 品牌横幅：渐变背景上的清单卡片，标语「桌面日程清单 · AI 规划 · 本地优先」" width="100%">
 </p>
 
 <p align="center">
   <a href="https://github.com/CDUESTC-OpenAtom-Open-Source-Club/DeskDaily/releases/latest">下载最新版本</a> ·
   <a href="docs/SHOWCASE.md">图文展示</a> ·
   <a href="docs/TEMPLATES.md">学生与工作者模板</a> ·
-  <a href="docs/ROADMAP.md">后续路线图</a>
+  <a href="docs/ROADMAP.md">迭代计划</a>
 </p>
 
 ![Platform](https://img.shields.io/badge/platform-macOS%2013%2B-blue)
@@ -18,7 +18,24 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Swift](https://img.shields.io/badge/swift-5-orange)
 
-> 当前仓库已提交应用图标作为视觉资产；真实运行截图会在干净演示环境制作后放入 [`docs/assets/screenshots/`](docs/assets/screenshots/)，不使用伪造截图。
+> 当前仓库已提交品牌横幅与应用图标作为视觉资产；真实运行截图会在干净演示环境制作后放入 [`docs/assets/screenshots/`](docs/assets/screenshots/)，不使用伪造截图。
+
+## 界面预览
+
+<!-- 真实截图就位后取消注释（文件名见 docs/SCREENSHOTS.md，需使用虚构演示数据）：
+<p align="center">
+  <img src="docs/assets/screenshots/overview-main.png" alt="主卡片：今日任务、进度环与计划表切换" width="32%">
+  &nbsp;
+  <img src="docs/assets/screenshots/ai-planner.png" alt="AI 日程规划：自然语言对话与候选任务确认" width="32%">
+  &nbsp;
+  <img src="docs/assets/screenshots/statistics-heatmap.png" alt="统计页：26 周热力图与每周复盘" width="32%">
+</p>
+<p align="center">
+  <img src="docs/assets/screenshots/template-catalog.png" alt="内置模板目录：学生与工作者日程模板" width="49%">
+  &nbsp;
+  <img src="docs/assets/screenshots/focus-mode.png" alt="番茄钟专注条与迷你胶囊" width="49%">
+</p>
+-->
 
 ## 快速了解
 
