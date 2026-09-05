@@ -15,7 +15,7 @@ echo "==> 编译 Swift 源码（约需 1 分钟）…"
 swiftc -O -swift-version 5 \
   -target arm64-apple-macos13.0 \
   -o "$APP_DIR/Contents/MacOS/$APP_NAME" \
-  Sources/main.swift Sources/Store.swift Sources/KeychainStore.swift Sources/ChatSession.swift Sources/BuiltInTemplates.swift Sources/TemplateCatalogView.swift Sources/ShotExporter.swift Sources/WindowController.swift Sources/ContentView.swift Sources/AIAssistant.swift Sources/StatisticsView.swift Sources/QuickAdd.swift Sources/HotkeyManager.swift Sources/StatusBar.swift
+  Sources/main.swift Sources/Store.swift Sources/KeychainStore.swift Sources/OccurrenceKit.swift Sources/ChatSession.swift Sources/BuiltInTemplates.swift Sources/TemplateCatalogView.swift Sources/ShotExporter.swift Sources/WindowController.swift Sources/ContentView.swift Sources/AIAssistant.swift Sources/StatisticsView.swift Sources/QuickAdd.swift Sources/HotkeyManager.swift Sources/StatusBar.swift
 
 echo "==> 生成应用图标"
 if [ ! -f "$BUILD_DIR/AppIcon.icns" ]; then

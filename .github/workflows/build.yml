@@ -19,6 +19,11 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Run core logic tests
+        run: |
+          chmod +x Tests/run_tests.sh
+          ./Tests/run_tests.sh
+
       - name: Build app
         run: |
           chmod +x build.sh

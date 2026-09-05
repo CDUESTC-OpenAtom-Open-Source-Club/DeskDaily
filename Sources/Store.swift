@@ -3,6 +3,18 @@ import Combine
 import AppKit
 import UserNotifications
 
+// MARK: - 跨模块通知名（从 WindowController 移入，使 Store.swift 可独立编译测试）
+
+extension Notification.Name {
+    static let deskDailyWindowModeChanged = Notification.Name("DeskDailyWindowModeChanged")
+    /// 睡前复盘通知/按钮 → 打开 AI 复盘对话
+    static let deskDailyOpenReview = Notification.Name("DeskDailyOpenReview")
+    /// 菜单 ⌘N「新任务」→ 聚焦添加输入框
+    static let deskDailyFocusAddField = Notification.Name("DeskDailyFocusAddField")
+    /// 时段冲突检测命中 → 卡片轻提示（userInfo["title"] = 冲突任务名）
+    static let deskDailyTimeConflict = Notification.Name("DeskDailyTimeConflict")
+}
+
 // MARK: - 基础枚举
 
 enum TZMode: Int, Codable, Hashable {
@@ -693,6 +705,34 @@ final class Store: ObservableObject {
     }
 
     func dayKey(_ date: Date = Store.now()) -> String { Store.dayKey(tz: tz, date: date) }
+
+    // 日期辅助：委托 OccurrenceKit 纯函数（与测试同源）
+    /// "yyyy-MM-dd" → 该日正午的 Date
+    func date(fromDayKey key: String) -> Date? { OccurrenceKit.date(fromDayKey: key, tz: tz) }
+
+    /// dayKey 加/减 N 天
+    func dayKey(byAddingDays days: Int, toKey key: String) -> String? {
+        OccurrenceKit.dayKey(byAdding: days, toKey: key, tz: tz)
+    }
+
+    /// dayKey 对应星期几（1=周日 … 7=周六；解析失败回落 1）
+    func weekday(ofDayKey key: String) -> Int {
+        OccurrenceKit.weekday(ofDayKey: key, tz: tz) ?? 1
+    }
+
+    /// "2026-08-24" → "8月24日"
+    func monthDayLabel(_ key: String) -> String {
+        let parts = key.split(separator: "-")
+        guard parts.count == 3, let m = Int(parts[1]), let d = Int(parts[2]) else { return key }
+        return "\(m)月\(d)日"
+    }
+
+    /// "2026-08-24" → "8/24"
+    func shortDayLabel(_ key: String) -> String {
+        let parts = key.split(separator: "-")
+        guard parts.count == 3, let m = Int(parts[1]), let d = Int(parts[2]) else { return key }
+        return "\(m)/\(d)"
+    }
 
     func minutesNow() -> Int {
         var cal = Calendar(identifier: .gregorian)

@@ -178,3 +178,33 @@ extension TaskItem {
         }
     }
 }
+
+// MARK: - 纯统计口径（不依赖 Store 实例，可独立测试）
+
+enum StatsCore {
+    /// 统计口径的“该天活跃”：重复规则命中，且该天不早于任务创建日
+    static func wasActive(_ task: TaskItem, onDay key: String, weekday: Int) -> Bool {
+        guard task.repeatRule.isActive(on: key, weekday: weekday) else { return false }
+        return task.createdOn.isEmpty || task.createdOn <= key
+    }
+
+    /// 某天跨给定计划表的活跃任务数 / 已完成数
+    static func dayCounts(sheets: [PlanSheet], dayKey: String, weekday: Int) -> (total: Int, done: Int) {
+        var total = 0
+        var done = 0
+        for sheet in sheets {
+            for task in sheet.tasks {
+                guard wasActive(task, onDay: dayKey, weekday: weekday) else { continue }
+                total += 1
+                if task.doneDays.contains(dayKey) { done += 1 }
+            }
+        }
+        return (total, done)
+    }
+
+    /// 单表口径（统计页“当前计划表”范围用）
+    static func dayCounts(sheet: PlanSheet?, dayKey: String, weekday: Int) -> (total: Int, done: Int) {
+        guard let sheet else { return (0, 0) }
+        return dayCounts(sheets: [sheet], dayKey: dayKey, weekday: weekday)
+    }
+}

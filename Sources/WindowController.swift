@@ -2,16 +2,6 @@ import AppKit
 import SwiftUI
 import CoreGraphics
 
-extension Notification.Name {
-    static let deskDailyWindowModeChanged = Notification.Name("DeskDailyWindowModeChanged")
-    /// 睡前复盘通知/按钮 → 打开 AI 复盘对话
-    static let deskDailyOpenReview = Notification.Name("DeskDailyOpenReview")
-    /// 菜单 ⌘N「新任务」→ 聚焦添加输入框
-    static let deskDailyFocusAddField = Notification.Name("DeskDailyFocusAddField")
-    /// 时段冲突检测命中 → 卡片轻提示（userInfo["title"] = 冲突任务名）
-    static let deskDailyTimeConflict = Notification.Name("DeskDailyTimeConflict")
-}
-
 final class WidgetPanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }

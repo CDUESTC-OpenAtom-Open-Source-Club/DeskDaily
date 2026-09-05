@@ -60,50 +60,7 @@ extension Store {
 
     // MARK: 日历辅助（dayKey 字符串加减天）
 
-    /// "yyyy-MM-dd" → 该日正午的 Date（取正午避免夏令时边界误差）
-    func date(fromDayKey key: String) -> Date? {
-        let parts = key.split(separator: "-")
-        guard parts.count == 3, let y = Int(parts[0]), let m = Int(parts[1]), let d = Int(parts[2]) else { return nil }
-        var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = tz
-        var c = DateComponents()
-        c.year = y
-        c.month = m
-        c.day = d
-        c.hour = 12
-        return cal.date(from: c)
-    }
-
-    /// dayKey 加/减 N 天，越界或解析失败返回 nil
-    func dayKey(byAddingDays days: Int, toKey key: String) -> String? {
-        guard let base = date(fromDayKey: key) else { return nil }
-        var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = tz
-        guard let shifted = cal.date(byAdding: .day, value: days, to: base) else { return nil }
-        return Store.dayKey(tz: tz, date: shifted)
-    }
-
-    /// dayKey 对应星期几（1=周日 … 7=周六，与 Calendar.weekday 一致）
-    func weekday(ofDayKey key: String) -> Int {
-        guard let date = date(fromDayKey: key) else { return 1 }
-        var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = tz
-        return cal.component(.weekday, from: date)
-    }
-
-    /// "2026-08-24" → "8月24日"
-    func monthDayLabel(_ key: String) -> String {
-        let parts = key.split(separator: "-")
-        guard parts.count == 3, let m = Int(parts[1]), let d = Int(parts[2]) else { return key }
-        return "\(m)月\(d)日"
-    }
-
-    /// "2026-08-24" → "8/24"
-    func shortDayLabel(_ key: String) -> String {
-        let parts = key.split(separator: "-")
-        guard parts.count == 3, let m = Int(parts[1]), let d = Int(parts[2]) else { return key }
-        return "\(m)/\(d)"
-    }
+    // 日期辅助（date/dayKey偏移/weekday/标签）已抽取到 Store.swift + OccurrenceKit，与测试同源
 
     /// 本周周一的 dayKey
     func mondayKeyOfWeek() -> String {
@@ -114,22 +71,15 @@ extension Store {
     /// 统计口径的"该天活跃"：重复规则命中，且该天不早于任务创建日
     /// （只影响历史统计的公平性，不改 visibleTasks 的展示口径）
     func wasActive(_ task: TaskItem, onDay key: String, weekday: Int) -> Bool {
-        guard task.repeatRule.isActive(on: key, weekday: weekday) else { return false }
-        return task.createdOn.isEmpty || task.createdOn <= key
+        StatsCore.wasActive(task, onDay: key, weekday: weekday)
     }
 
-    /// 某天范围内的活跃任务数 / 已完成数
+    /// 某天范围内的活跃任务数 / 已完成数（口径委托纯函数 StatsCore，与测试同源）
     func dayCounts(key: String, weekday: Int, scope: StatsScope = .currentSheet) -> (total: Int, done: Int) {
-        var total = 0
-        var done = 0
-        for sheet in statsSheets(scope: scope) {
-            for task in sheet.tasks {
-                guard wasActive(task, onDay: key, weekday: weekday) else { continue }
-                total += 1
-                if task.doneDays.contains(key) { done += 1 }
-            }
+        if scope == .allSheets {
+            return StatsCore.dayCounts(sheets: statsSheets(scope: scope), dayKey: key, weekday: weekday)
         }
-        return (total, done)
+        return StatsCore.dayCounts(sheet: activeSheet, dayKey: key, weekday: weekday)
     }
 
     // MARK: 连续打卡

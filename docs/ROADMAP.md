@@ -19,8 +19,8 @@
 
 ## v2.4 时间版 —— 日程经得起真实一周
 
-- [ ] 工程安全网：抽取 RepeatRule / TaskItem.validate / 统计口径为纯 Foundation 测试目标，CI 运行测试
-- [ ] occurrence 日期计算工具（dayKey 偏移、跨日结束时间、未来日期枚举）
+- [x] 工程安全网：RepeatRule / TaskItem.validate / AppDataValidator / AIClient 解析净化 / StatsCore 统计口径抽取为纯逻辑（`Tests/run_tests.sh`，49 项断言），CI 在构建前运行测试
+- [x] occurrence 日期计算工具（OccurrenceKit：dayKey 偏移、跨日结束 endInfo/fireDate、未来日期枚举、upcomingDays，全部带测试）
 - [ ] 解锁跨午夜时段：结束提醒落到次日，任务行显示跨天标记（替代当前的明确拒绝）
 - [ ] 未来 7 天视图：「今天 | 明天」扩展为周条，可查看/添加未来任意一天
 - [ ] 跳过单次 occurrence 与任务截止日期
