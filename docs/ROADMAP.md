@@ -21,7 +21,7 @@
 
 - [x] 工程安全网：RepeatRule / TaskItem.validate / AppDataValidator / AIClient 解析净化 / StatsCore 统计口径抽取为纯逻辑（`Tests/run_tests.sh`，49 项断言），CI 在构建前运行测试
 - [x] occurrence 日期计算工具（OccurrenceKit：dayKey 偏移、跨日结束 endInfo/fireDate、未来日期枚举、upcomingDays，全部带测试）
-- [ ] 解锁跨午夜时段：结束提醒落到次日，任务行显示跨天标记（替代当前的明确拒绝）
+- [x] 解锁跨午夜时段：`TaskItem.validate` 放开跨日（时长 ≤600 保证最多溢出次日）；结束提醒按 occurrence 起始日去重（`endRemindedDays` 键=起始日，与旧数据同键兼容）；系统日历通知经 `OccurrenceKit.fireDate` 落到次日正确时刻；任务行显示 `23:00-00:30 次日`，午夜后仍为绿色进行中、越过次日结束才转过期。已用真实时钟平移验证（昨天 23:00+90 → 今天 00:34 触发）
 - [ ] 未来 7 天视图：「今天 | 明天」扩展为周条，可查看/添加未来任意一天
 - [ ] 跳过单次 occurrence 与任务截止日期
 - [ ] 通知调度适配 occurrence 模型（identifier 携带目标日期）

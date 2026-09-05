@@ -35,9 +35,8 @@ check("weekly 周六不活跃(weekday=7)", !weekdays.isActive(on: "2026-09-05", 
 
 check("无时间无时长合法", (try? TaskItem.validate(remindAt: nil, duration: nil)) != nil)
 check("23:30+29 当天内合法", (try? TaskItem.validate(remindAt: 23 * 60 + 30, duration: 29)) != nil)
-check("23:30+30 结束恰在午夜被拒", (try? TaskItem.validate(remindAt: 23 * 60 + 30, duration: 30)) == nil)
-check("23:31+30 跨午夜被拒", (try? TaskItem.validate(remindAt: 23 * 60 + 31, duration: 30)) == nil)
-check("23:30+31 跨午夜被拒", (try? TaskItem.validate(remindAt: 23 * 60 + 30, duration: 31)) == nil)
+check("23:31+30 跨午夜已解锁为合法", (try? TaskItem.validate(remindAt: 23 * 60 + 31, duration: 30)) != nil)
+check("23:00+600 最大溢出仍合法", (try? TaskItem.validate(remindAt: 23 * 60, duration: 600)) != nil)
 check("时间 1440 越界被拒", (try? TaskItem.validate(remindAt: 1440, duration: nil)) == nil)
 check("时长 0 被拒", (try? TaskItem.validate(remindAt: 600, duration: 0)) == nil)
 check("时长 601 被拒", (try? TaskItem.validate(remindAt: 600, duration: 601)) == nil)

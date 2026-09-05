@@ -413,12 +413,11 @@ enum Notify {
     private static func addScheduled(center: UNUserNotificationCenter, task: TaskItem, sheetID: UUID,
                                      dayKey: String, minute: Int, phase: String, tz: TimeZone,
                                      calendar: Calendar, now: Date) {
-        guard let day = date(fromDayKey: dayKey, calendar: calendar) else { return }
-        var components = calendar.dateComponents([.year, .month, .day], from: day)
-        components.hour = minute / 60
-        components.minute = minute % 60
+        // minute 可 ≥1440（跨午夜结束）：OccurrenceKit 换算到正确的次日时刻
+        guard let fireDate = OccurrenceKit.fireDate(dayKey: dayKey, minutes: minute, tz: tz),
+              fireDate > now else { return }
+        var components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: fireDate)
         components.timeZone = tz
-        guard let fireDate = calendar.date(from: components), fireDate > now else { return }
         let id = "\(schedulePrefix)\(sheetID.uuidString).\(task.id.uuidString).\(dayKey).\(phase)"
         let content = UNMutableNotificationContent()
         content.title = phase == "start" ? "⏰ \(task.title)" : "✅ 时间到：\(task.title)"
@@ -1191,26 +1190,49 @@ final class Store: ObservableObject {
     // MARK: 提醒
 
     private func checkReminders() {
-        let weekday = weekdayNow()
+        let todayWeekday = weekdayNow()
+        let yesterdayKey = dayKey(byAddingDays: -1, toKey: currentDay)
         for sheetIndex in sheets.indices {
             let sheetID = sheets[sheetIndex].id
             for taskIndex in sheets[sheetIndex].tasks.indices {
                 let task = sheets[sheetIndex].tasks[taskIndex]
-                guard task.repeatRule.isActive(on: currentDay, weekday: weekday),
-                      let start = task.remindAt,
-                      !task.doneDays.contains(currentDay) else { continue }
-                if nowMinutes >= start, !task.remindedDays.contains(currentDay) {
-                    sheets[sheetIndex].tasks[taskIndex].remindedDays.insert(currentDay)
-                    if nowMinutes - start <= 30 {
-                        fireReminder(for: task, phase: .start, sheetID: sheetID)
+                guard let start = task.remindAt else { continue }
+                let duration = task.durationMinutes
+                let end = duration.map { start + $0 }  // 可 ≥1440（跨午夜）
+
+                // —— 今天的 occurrence：开始提醒 ——
+                if task.repeatRule.isActive(on: currentDay, weekday: todayWeekday),
+                   !task.doneDays.contains(currentDay) {
+                    if nowMinutes >= start, !task.remindedDays.contains(currentDay) {
+                        sheets[sheetIndex].tasks[taskIndex].remindedDays.insert(currentDay)
+                        if nowMinutes - start <= 30 {
+                            fireReminder(for: task, phase: .start, sheetID: sheetID, occurrenceDay: currentDay)
+                        }
                     }
                 }
-                if let duration = task.durationMinutes {
-                    let end = start + duration
-                    if nowMinutes >= end, !task.endRemindedDays.contains(currentDay) {
-                        sheets[sheetIndex].tasks[taskIndex].endRemindedDays.insert(currentDay)
-                        if nowMinutes - end <= 30 {
-                            fireReminder(for: sheets[sheetIndex].tasks[taskIndex], phase: .end, sheetID: sheetID)
+
+                // —— 结束提醒：按 occurrence 起始日去重（同日结束键=当天；跨午夜键=起始日）——
+                if let duration, let end {
+                    if end < 1440 {
+                        // 当天开始、当天结束
+                        if task.repeatRule.isActive(on: currentDay, weekday: todayWeekday),
+                           !task.doneDays.contains(currentDay),
+                           nowMinutes >= end, !task.endRemindedDays.contains(currentDay) {
+                            sheets[sheetIndex].tasks[taskIndex].endRemindedDays.insert(currentDay)
+                            if nowMinutes - end <= 30 {
+                                fireReminder(for: task, phase: .end, sheetID: sheetID, occurrenceDay: currentDay)
+                            }
+                        }
+                    } else if let yesterdayKey {
+                        // 昨天开始、跨午夜到今天结束（分钟 = end - 1440）
+                        let endToday = end - 1440
+                        guard task.repeatRule.isActive(on: yesterdayKey, weekday: weekday(ofDayKey: yesterdayKey)),
+                              !task.doneDays.contains(yesterdayKey),
+                              nowMinutes >= endToday,
+                              !task.endRemindedDays.contains(yesterdayKey) else { continue }
+                        sheets[sheetIndex].tasks[taskIndex].endRemindedDays.insert(yesterdayKey)
+                        if nowMinutes - endToday <= 30 {
+                            fireReminder(for: task, phase: .end, sheetID: sheetID, occurrenceDay: yesterdayKey)
                         }
                     }
                 }
@@ -1220,15 +1242,18 @@ final class Store: ObservableObject {
 
     private enum ReminderPhase { case start, end }
 
-    private func fireReminder(for task: TaskItem, phase: ReminderPhase, sheetID: UUID) {
+    private func fireReminder(for task: TaskItem, phase: ReminderPhase, sheetID: UUID, occurrenceDay: String) {
         let start = timeString(task.remindAt ?? 0)
+        let endText = timeString(((task.remindAt ?? 0) + (task.durationMinutes ?? 0)) % 1440)
+        let spill = OccurrenceKit.endLabel(startMinutes: task.remindAt ?? 0,
+                                           duration: task.durationMinutes ?? 0).map { " \($0)" } ?? ""
         var title = "⏰ \(task.title)"
         var body = "到设定的提醒时间了（\(start)），别忘了完成它"
         if phase == .start, let d = task.durationMinutes {
-            body = "时段 \(start)-\(timeString((task.remindAt ?? 0) + d)) 开始，时长 \(d) 分钟"
+            body = "时段 \(start)-\(endText)\(spill) 开始，时长 \(d) 分钟"
         } else if phase == .end {
             title = "✅ 时间到：\(task.title)"
-            body = "本时段（\(start)-\(timeString((task.remindAt ?? 0) + (task.durationMinutes ?? 0)))）结束了，完成就打勾 ✓"
+            body = "本时段（\(start)-\(endText)\(spill)）结束了，完成就打勾 ✓"
         }
         if settings.soundOn { Sound.play() }
         // 有系统日历通知时，前台只维护提醒状态与音效，避免横幅重复出现。

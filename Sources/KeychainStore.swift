@@ -164,6 +164,8 @@ enum DataValidationError: LocalizedError {
 }
 
 extension TaskItem {
+    /// 时段校验：开始 00:00–23:59；时长 1–600 分钟。
+    /// v2.4 起允许跨午夜（时长上限 600 保证最多溢出到次日，结束提醒落在次日，见 OccurrenceKit）。
     static func validate(remindAt: Int?, duration: Int?) throws {
         if let start = remindAt, !(0...1439).contains(start) {
             throw DataValidationError.invalidTime("提醒时间必须在 00:00 至 23:59 之间")
@@ -171,9 +173,6 @@ extension TaskItem {
         if let duration {
             guard (1...600).contains(duration) else {
                 throw DataValidationError.invalidTime("时段时长必须在 1 至 600 分钟之间")
-            }
-            if let start = remindAt, start + duration >= 1440 {
-                throw DataValidationError.invalidTime("时段不能跨午夜，请缩短时长或调整开始时间")
             }
         }
     }

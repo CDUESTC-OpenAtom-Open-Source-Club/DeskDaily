@@ -1327,25 +1327,39 @@ struct TaskRow: View {
 
     private var periodEnd: Int? {
         guard let s = task.remindAt, let d = task.durationMinutes else { return nil }
-        return s + d
+        return s + d  // 可 ≥1440（跨午夜）
     }
 
-    /// 正处于任务时段内（开始 ≤ 现在 < 结束）
+    private var crossesMidnight: Bool {
+        guard let s = task.remindAt, let e = periodEnd else { return false }
+        return e >= 1440 && s < 1440
+    }
+
+    /// 正处于任务时段内（开始 ≤ 现在 < 结束）；跨午夜时段在午夜后仍视为进行中
     private var inPeriod: Bool {
-        guard !tomorrowMode, !done, let s = task.remindAt, let d = task.durationMinutes else { return false }
-        return nowMinutes >= s && nowMinutes < s + d
+        guard !tomorrowMode, !done, let s = task.remindAt, let e = periodEnd else { return false }
+        if e < 1440 {
+            return nowMinutes >= s && nowMinutes < e
+        }
+        // 跨午夜：开始后（今晚）或 次日结束前（end-1440 之后的天亮时段）
+        return nowMinutes >= s || nowMinutes < e - 1440
     }
 
     private var isOverdue: Bool {
         guard !tomorrowMode, !done, let s = task.remindAt else { return false }
-        if let end = periodEnd { return nowMinutes > end }
+        if let e = periodEnd {
+            if e < 1440 { return nowMinutes > e }
+            // 跨午夜：越过次日结束时刻才算过期
+            return nowMinutes > e - 1440
+        }
         return nowMinutes > s + 1
     }
 
     private var timeChipText: String {
         guard let s = task.remindAt else { return "" }
         guard let e = periodEnd else { return store.timeString(s) }
-        return "\(store.timeString(s))-\(store.timeString(e))"
+        let spill = crossesMidnight ? " 次日" : ""
+        return "\(store.timeString(s))-\(store.timeString(e % 1440))\(spill)"
     }
 
     var body: some View {
