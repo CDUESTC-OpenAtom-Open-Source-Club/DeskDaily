@@ -42,6 +42,31 @@
 - [ ] Universal Binary（Intel Mac 支持）
 - [ ] 可选：Sparkle 应用内检查更新
 
+## v4.0 Windows 版 —— 同一份数据，双平台体验
+
+> 在 v2.4–v3.0 迭代完成后启动。目标：Windows 用户能用上功能对等的 DeskDaily，并与 Mac 版互导数据。
+
+### 可行性结论（2026-09 评估）
+
+- **同套代码直接编译出 Windows 版不可行**：现有 UI 基于 SwiftUI/AppKit，通知基于 UserNotifications，密钥基于 macOS Keychain——全部是苹果平台专属；Swift 在 Windows 上虽可运行 Foundation，但没有可用的 UI 框架，生态也不成熟。
+- **可行路线是“共享数据 + 移植逻辑 + 原生 UI”**：
+  1. **数据格式共享**：`data.json`（schemaVersion=2）作为跨平台契约，两边互导备份无损（现有 `Tests/main.swift` 的校验用例就是契约测试，可直接移植）；
+  2. **核心逻辑移植**：RepeatRule / OccurrenceKit / 校验器 / 统计口径均为纯逻辑（无 UI 依赖，v2.4 已抽取），按目标语言逐文件对照移植，共享同一组测试夹具；
+  3. **UI 各平台原生**：Windows 侧候选 **C# + WinUI 3（或 WPF/Avalonia）**——毛玻璃卡片、托盘常驻、系统 Toast 通知都有成熟对应物。
+- **不建议**：为跨平台用 Flutter/Compose 重写 Mac 版（现有原生体验会倒退），也不建议走 Web 壳（Electron/Tauri）——桌面常驻小卡片的内存与启动速度要求更适合原生。
+- **仓库形态**：同一仓库 `windows/` 目录（优于分支——两边长期并行演进，分支会频繁冲突）；GitHub Actions 增加 `windows-latest` 构建作业。
+
+### 任务清单
+
+- [ ] Windows 技术验证：WinUI 3 / WPF / Avalonia 三选一（评估毛玻璃、托盘、Toast、开机自启的实现成本），产出最小可运行壳
+- [ ] 移植核心逻辑：RepeatRule / OccurrenceKit / AppDataValidator / StatsCore → C#，用 `Tests/main.swift` 的用例做回归夹具
+- [ ] 数据互通：Windows 版直接读写 `data.json`（同一 schemaVersion），导入/导出与 Mac 版互相无损验证
+- [ ] 功能对等（第一批）：任务清单、勾选打卡、多计划表、重复规则、时段提醒（Windows Toast + 计划任务）、模板目录
+- [ ] 功能对等（第二批）：统计热力图、自然语言快速添加、AI 规划（两阶段确认）、番茄钟
+- [ ] Windows CI：`windows-latest` 构建 + 测试 + 打包（MSIX 或便携 zip）
+- [ ] README 增加 Windows 安装说明与双平台截图
+- [ ] 发布 v4.0：同一 Release 页挂 macOS DMG + Windows 安装包
+
 ## 开发范式
 
 1. **主题驱动**：每个版本只讲一个用户故事，不合入无关改动。
