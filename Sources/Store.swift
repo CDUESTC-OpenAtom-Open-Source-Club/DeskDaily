@@ -777,8 +777,14 @@ final class Store: ObservableObject {
 
     // MARK: 展示
 
-    /// 明天的 dayKey（周视图用）
+    /// 明天的 dayKey（QuickAdd「明早/明晚」解析用）
     func tomorrowKey() -> String? { dayKey(byAddingDays: 1, toKey: currentDay) }
+
+    /// 周视图：offset 0=今天，1…6=未来 N 天（OccurrenceKit 负责跨月/跨年）
+    func dayKey(byOffset offset: Int) -> String? {
+        guard offset > 0 else { return currentDay }
+        return dayKey(byAddingDays: offset, toKey: currentDay)
+    }
 
     var visibleTasks: [TaskItem] {
         guard let i = activeIndex else { return [] }
@@ -794,10 +800,10 @@ final class Store: ObservableObject {
             }
     }
 
-    /// 周视图：offset == 1 查看明天（重复规则活跃于明天，或 once.date = 明天）
+    /// 周视图：offset 0=今天，1…6=未来 N 天（重复规则命中该日，或 once.date = 该日）
     func visibleTasks(offset: Int) -> [TaskItem] {
-        guard offset == 1 else { return visibleTasks }
-        guard let i = activeIndex, let key = tomorrowKey() else { return [] }
+        guard offset > 0 else { return visibleTasks }
+        guard let i = activeIndex, let key = dayKey(byOffset: offset) else { return [] }
         let weekday = weekday(ofDayKey: key)
         return sheets[i].tasks
             .filter { $0.repeatRule.isActive(on: key, weekday: weekday) }
@@ -814,15 +820,15 @@ final class Store: ObservableObject {
 
     func isDone(_ task: TaskItem) -> Bool { task.doneDays.contains(currentDay) }
 
-    /// 周视图：明天视角用明天的 key 判断完成态（还没到，天然都是未完成）
+    /// 周视图：未来视角用目标日的 key 判断完成态（还没到，天然都是未完成）
     func isDone(_ task: TaskItem, offset: Int) -> Bool {
-        guard offset == 1, let key = tomorrowKey() else { return task.doneDays.contains(currentDay) }
+        guard offset > 0, let key = dayKey(byOffset: offset) else { return task.doneDays.contains(currentDay) }
         return task.doneDays.contains(key)
     }
 
     func dateHeader(offset: Int = 0) -> (weekday: String, date: String) {
         let target: Date
-        if offset == 1, let key = tomorrowKey(), let d = date(fromDayKey: key) {
+        if offset > 0, let key = dayKey(byOffset: offset), let d = date(fromDayKey: key) {
             target = d
         } else {
             target = Store.now()

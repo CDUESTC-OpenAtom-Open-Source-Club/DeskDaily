@@ -405,6 +405,10 @@ struct ContentView: View {
                 .background(GeometryReader { g in
                     Color.clear.preference(key: HeightKey.self, value: g.size.height)
                 })
+            weekStrip
+                .background(GeometryReader { g in
+                    Color.clear.preference(key: HeightKey.self, value: g.size.height)
+                })
             focusBarSection
             taskList
             addBarSection
@@ -413,6 +417,81 @@ struct ContentView: View {
                 })
         }
         .frame(minWidth: 320, maxWidth: .infinity, minHeight: 260, maxHeight: .infinity, alignment: .top)
+    }
+
+    // MARK: - 未来 7 天周条（offset 0=今天，1…6=未来；可查看/添加未来任意一天）
+
+    private var weekStrip: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<7, id: \.self) { offset in
+                weekStripButton(offset: offset)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.bottom, 6)
+    }
+
+    private func weekStripButton(offset: Int) -> some View {
+        let selected = viewOffset == offset
+        let hasTasks = !store.visibleTasks(offset: offset).isEmpty
+        return Button {
+            guard offset != viewOffset else { return }
+            slideForward = offset > viewOffset
+            withDDAnimation { viewOffset = offset }
+            // 切换目标日重置草稿：未来视角新任务默认「仅该日」
+            doneExpanded = false
+            withDDAnimation {
+                newRule = offset == 0
+                    ? RepeatRule()
+                    : RepeatRule.once(date: store.dayKey(byOffset: offset) ?? store.currentDay)
+            }
+        } label: {
+            VStack(spacing: 1) {
+                Text(weekStripTitle(offset))
+                    .font(.system(size: 10.5, weight: selected ? .bold : .semibold))
+                Text(store.shortDayLabel(store.dayKey(byOffset: offset) ?? store.currentDay))
+                    .font(.system(size: 8, weight: .medium))
+                    .opacity(0.75)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 4)
+            .background(
+                Capsule().fill(selected
+                               ? AnyShapeStyle(Accent.gradient)
+                               : AnyShapeStyle(Color.primary.opacity(hasTasks ? 0.07 : 0.045)))
+            )
+            .overlay(alignment: .top) {
+                if hasTasks, !selected {
+                    Circle()
+                        .fill(Accent.start)
+                        .frame(width: 4, height: 4)
+                        .offset(y: 3)
+                }
+            }
+            .foregroundColor(selected ? .white : .primary.opacity(0.75))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .hoverPointing()
+        .accessibilityLabel(offset == 0 ? "今天" : "\(futureDayLabel(offset))的任务")
+    }
+
+    /// 周条标题：今天 / 明 / 一…六
+    private func weekStripTitle(_ offset: Int) -> String {
+        if offset == 0 { return "今" }
+        if offset == 1 { return "明" }
+        guard let key = store.dayKey(byOffset: offset) else { return "?" }
+        let chars = [1: "日", 2: "一", 3: "二", 4: "三", 5: "四", 6: "五", 7: "六"]
+        return chars[store.weekday(ofDayKey: key)] ?? "?"
+    }
+
+    /// 头部徽标：明天 / 后天 / 周X
+    private func futureDayLabel(_ offset: Int) -> String {
+        if offset == 1 { return "明天" }
+        if offset == 2 { return "后天" }
+        guard let key = store.dayKey(byOffset: offset) else { return "未来" }
+        let chars = [1: "日", 2: "一", 3: "二", 4: "三", 5: "四", 6: "五", 7: "六"]
+        return "周\(chars[store.weekday(ofDayKey: key)] ?? "?")"
     }
 
     // MARK: - 迷你折叠胶囊（双击标题区折叠 / 双击胶囊展开）
@@ -491,29 +570,6 @@ struct ContentView: View {
 
     private var sheetBar: some View {
         HStack(spacing: 8) {
-            // 今天 | 明天 周视图切换（带滑动方向）
-            Picker("视角", selection: Binding(
-                get: { viewOffset },
-                set: { newValue in
-                    guard newValue != viewOffset else { return }
-                    slideForward = newValue > viewOffset
-                    withDDAnimation { viewOffset = newValue }
-                })) {
-                Text("今天").tag(0)
-                Text("明天").tag(1)
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 86)
-            .labelsHidden()
-            .onChange(of: viewOffset) { offset in
-                // 切视角重置草稿：明天视角新任务默认「仅明天」
-                doneExpanded = false
-                withDDAnimation {
-                    newRule = offset == 1
-                        ? RepeatRule.once(date: store.tomorrowKey() ?? store.currentDay)
-                        : RepeatRule()
-                }
-            }
             Menu {
                 ForEach(store.sheets) { sheet in
                     Button {
@@ -679,8 +735,8 @@ struct ContentView: View {
                         .font(.system(size: 12, weight: .bold))
                         .foregroundStyle(Accent.gradient)
                         .kerning(2)
-                    if viewOffset == 1 {
-                        Text("明天")
+                    if viewOffset > 0 {
+                        Text(futureDayLabel(viewOffset))
                             .font(.system(size: 9, weight: .bold))
                             .padding(.horizontal, 5)
                             .padding(.vertical, 2)
@@ -839,10 +895,10 @@ struct ContentView: View {
             VStack(spacing: 2) {
                 if currentTasks.isEmpty {
                     EmptyStateView(
-                        title: viewOffset == 1 ? "明天还没有任务" : "今天还没有任务",
-                        message: viewOffset == 1
-                            ? "试试输入「9点 起床」快速添加\n明天的事，明天再勾"
-                            : "在下方输入框添加任务\n完成后点击左侧圆圈打勾")
+                        title: viewOffset == 0 ? "今天还没有任务" : "\(futureDayLabel(viewOffset))还没有任务",
+                        message: viewOffset == 0
+                            ? "试试输入「9点 起床」快速添加\n完成后点击左侧圆圈打勾"
+                            : "在周条选中日期直接添加\n或输入「明早 9 点 …」快速安排")
                 }
                 if allDoneToday {
                     AllDoneView(doneAt: celebrationAt)
@@ -891,7 +947,7 @@ struct ContentView: View {
                 done: store.isDone(task, offset: viewOffset),
                 nowMinutes: store.nowMinutes,
                 tomorrowMode: viewOffset == 1,
-                onBlockedToggle: { showInfoToast("明天的事明天再说 😄") })
+                onBlockedToggle: { showInfoToast("未来的事未来再说 😄 未来视角仅作规划") })
             .transition(DDMotion.taskRowTransition)
     }
 
@@ -1035,10 +1091,10 @@ struct ContentView: View {
         }
     }
 
-    /// 规则芯片文案（明天的 once 显示「仅明天」）
+    /// 规则芯片文案：once 指向未来选中日时显示「仅X/X」
     private var draftRuleChipText: String {
-        if newRule.kind == .once, let key = store.tomorrowKey(), newRule.date == key {
-            return "仅明天"
+        if newRule.kind == .once, newRule.date != "", newRule.date != store.currentDay {
+            return "仅\(store.shortDayLabel(newRule.date))"
         }
         return ruleName(newRule)
     }
@@ -1094,14 +1150,14 @@ struct ContentView: View {
         if let parse = addParse, parse.matched, !parse.title.isEmpty {
             title = parse.title
         }
-        let scheduledForTomorrow = newRule.kind == .once && newRule.date == store.tomorrowKey()
+        let scheduledForFutureDay = newRule.kind == .once && newRule.date != store.currentDay && newRule.date != ""
         // 时段冲突检测（在入列前比对既有任务；仅提示 + 黄色闪烁，不阻塞创建）
         store.detectTimeConflicts(excluding: nil, remindAt: newRemindMinutes, duration: newDuration)
         withDDAnimation {
             store.addTask(title: title, rule: newRule, remindAt: newRemindMinutes, duration: newDuration)
         }
-        if scheduledForTomorrow, viewOffset == 0 {
-            showInfoToast("已安排到明天 ✓ 切到「明天」看看")
+        if scheduledForFutureDay, viewOffset == 0 {
+            showInfoToast("已安排到 \(store.shortDayLabel(newRule.date)) ✓ 周条可查看")
         }
         newTitle = ""
         newRemindMinutes = nil
