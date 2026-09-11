@@ -194,6 +194,85 @@ check("工作日任务未来 7 天命中 5 天", workdays.count == 5)
 check("结束标签：不跨天为 nil", OccurrenceKit.endLabel(startMinutes: 600, duration: 30) == nil)
 check("结束标签：跨天为「次日」", OccurrenceKit.endLabel(startMinutes: 23 * 60 + 30, duration: 60) == "次日")
 
+// MARK: - CalendarService 日历纯函数（v2.5）
+
+let calDay = "2026-09-02"
+
+check("dayBounds 起点=北京时间 0 点", {
+    guard let b = CalendarService.dayBounds(forDayKey: calDay, tz: beijing) else { return false }
+    var c = Calendar(identifier: .gregorian); c.timeZone = beijing
+    let s = c.dateComponents([.month, .day, .hour, .minute], from: b.start)
+    return s.month == 9 && s.day == 2 && s.hour == 0 && s.minute == 0
+}())
+check("dayBounds 终点=北京时间 24 点（次日 0 点）", {
+    guard let b = CalendarService.dayBounds(forDayKey: calDay, tz: beijing) else { return false }
+    var c = Calendar(identifier: .gregorian); c.timeZone = beijing
+    let e = c.dateComponents([.month, .day, .hour, .minute], from: b.end)
+    return e.month == 9 && e.day == 3 && e.hour == 0 && e.minute == 0
+}())
+check("dayBounds 时区差异（北京 0 点比 UTC 0 点早 8 小时）", {
+    guard let b1 = CalendarService.dayBounds(forDayKey: calDay, tz: beijing),
+          let b2 = CalendarService.dayBounds(forDayKey: calDay, tz: utc) else { return false }
+    return b1.start.timeIntervalSince(b2.start) == -8 * 3600
+        && b1.end.timeIntervalSince(b2.end) == -8 * 3600
+}())
+check("dayBounds 非法 key 返回 nil", CalendarService.dayBounds(forDayKey: "2026/09/02", tz: beijing) == nil)
+
+func calEvent(_ title: String, startMinutes: Int, durationMinutes: Int,
+              dayKey: String = calDay, allDay: Bool = false) -> CalendarEvent {
+    CalendarEvent(id: title, title: title,
+                  start: OccurrenceKit.fireDate(dayKey: dayKey, minutes: startMinutes, tz: beijing)!,
+                  end: OccurrenceKit.fireDate(dayKey: dayKey, minutes: startMinutes + durationMinutes, tz: beijing)!,
+                  isAllDay: allDay)
+}
+
+let morningMeeting = calEvent("晨会", startMinutes: 9 * 60, durationMinutes: 60)  // 09:00-10:00
+let todayEvents = [morningMeeting, calEvent("年假事项", startMinutes: 0, durationMinutes: 0, allDay: true)]
+
+check("overlap 命中：9:30+30 与 09:00-10:00 重叠",
+      CalendarService.overlappingEvent(startMinutes: 9 * 60 + 30, duration: 30, dayKey: calDay, tz: beijing,
+                                       events: todayEvents)?.title == "晨会")
+check("overlap 不命中：11:00+30 与上午事件无交集",
+      CalendarService.overlappingEvent(startMinutes: 11 * 60, duration: 30, dayKey: calDay, tz: beijing,
+                                       events: [morningMeeting]) == nil)
+check("overlap 无时长按 30 分钟占用（9:45 命中 / 10:01 不命中）",
+      CalendarService.overlappingEvent(startMinutes: 9 * 60 + 45, duration: nil, dayKey: calDay, tz: beijing,
+                                       events: [morningMeeting]) != nil
+      && CalendarService.overlappingEvent(startMinutes: 10 * 60 + 1, duration: nil, dayKey: calDay, tz: beijing,
+                                          events: [morningMeeting]) == nil)
+check("overlap 全天事件整日占用，返回首个命中",
+      CalendarService.overlappingEvent(startMinutes: 23 * 60, duration: 30, dayKey: calDay, tz: beijing,
+                                       events: todayEvents)?.title == "年假事项")
+
+// 跨午夜候选：溢出部分忽略，只比对起始日当天
+let lateNightEvent = calEvent("夜班", startMinutes: 23 * 60 + 45, durationMinutes: 30)  // 23:45-次日00:15
+check("overlap 跨午夜候选 23:30+60 只比对当天，命中 23:45 事件",
+      CalendarService.overlappingEvent(startMinutes: 23 * 60 + 30, duration: 60, dayKey: calDay, tz: beijing,
+                                       events: [lateNightEvent]) != nil)
+check("overlap 次日才开始的当天候选不命中",
+      CalendarService.overlappingEvent(startMinutes: 23 * 60 + 30, duration: 60, dayKey: calDay, tz: beijing,
+                                       events: [calEvent("次日会", startMinutes: 24 * 60 + 15, durationMinutes: 30)]) == nil)
+
+// 跨午夜事件：夹到当天窗口参与比对（昨天 23:00-今天 01:00 → 今天按 [0, 60) 占用）
+let overnightEvent = calEvent("通宵项目", startMinutes: 23 * 60, durationMinutes: 120, dayKey: "2026-09-01")
+check("overlap 跨午夜事件今天 0:00-0:30 命中",
+      CalendarService.overlappingEvent(startMinutes: 0, duration: 30, dayKey: calDay, tz: beijing,
+                                       events: [overnightEvent]) != nil)
+check("overlap 跨午夜事件今天 1:30 起不命中",
+      CalendarService.overlappingEvent(startMinutes: 1 * 60 + 30, duration: 30, dayKey: calDay, tz: beijing,
+                                       events: [overnightEvent]) == nil)
+
+check("aiBusyText 单条格式", CalendarService.aiBusyText(events: [morningMeeting], tz: beijing) == "09:00-10:00 晨会")
+check("aiBusyText 多行每行一条", CalendarService.aiBusyText(
+    events: [morningMeeting, calEvent("专注开发", startMinutes: 14 * 60, durationMinutes: 90)],
+    tz: beijing) == "09:00-10:00 晨会\n14:00-15:30 专注开发")
+check("aiBusyText 全天事件标「全天」", CalendarService.aiBusyText(
+    events: [calEvent("年假", startMinutes: 0, durationMinutes: 0, allDay: true)], tz: beijing) == "全天 年假")
+check("aiBusyText 空返回空串", CalendarService.aiBusyText(events: [], tz: beijing) == "")
+check("timeRangeText 全天显示「全天」",
+      CalendarService.timeRangeText(for: calEvent("休假", startMinutes: 0, durationMinutes: 0, allDay: true),
+                                    tz: beijing) == "全天")
+
 // MARK: - 结果
 
 print("")

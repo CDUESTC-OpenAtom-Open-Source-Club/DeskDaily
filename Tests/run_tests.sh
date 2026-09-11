@@ -9,6 +9,7 @@ swiftc -O -swift-version 5 -target arm64-apple-macos13.0 \
   Sources/Store.swift \
   Sources/KeychainStore.swift \
   Sources/OccurrenceKit.swift \
+  Sources/CalendarService.swift \
   Sources/AIAssistant.swift \
   Tests/main.swift \
   -o build/tests/dd_tests 2>&1 | grep -E "error" && exit 1 || true

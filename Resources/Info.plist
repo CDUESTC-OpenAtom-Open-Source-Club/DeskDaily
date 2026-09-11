@@ -24,6 +24,12 @@
 	<string>AppIcon</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>DeskDaily 需要读取你的日历，以便在清单中显示今日日程并帮助 AI 避开会议时段（只读，不会写入日历）</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>DeskDaily 需要读取你的日历，以便在清单中显示今日日程并帮助 AI 避开会议时段（只读，不会写入日历）</string>
+	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
+	<string>DeskDaily 需要读取你的日历，以便在清单中显示今日日程并帮助 AI 避开会议时段（只读，不会写入日历）</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSSupportsAutomaticTermination</key>

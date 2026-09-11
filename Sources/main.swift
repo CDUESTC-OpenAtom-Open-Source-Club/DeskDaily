@@ -64,6 +64,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         WindowController.shared.setup()
+        // v2.5：启动后按设置读取今日日历（仅 calendarEnabled 时才发起授权与读取）
+        CalendarService.shared.refreshIfNeeded(settings: store.settings)
         // 全局热键 / 菜单栏迷你入口（按设置开关）
         Hotkey.setEnabled(store.settings.globalHotkey)
         StatusBarManager.shared.setEnabled(store.settings.statusBarIcon)

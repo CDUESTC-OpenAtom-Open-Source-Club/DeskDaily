@@ -67,6 +67,13 @@ func activateApp() {
     }
 }
 
+/// 打开「系统设置 → 隐私与安全性 → 日历」（日历授权被拒时引导用户去开启）
+func openCalendarPrivacySettings() {
+    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.privacy?privacy_calendars") {
+        NSWorkspace.shared.open(url)
+    }
+}
+
 // MARK: - 动效辅助（全局统一；系统开启"减弱动态效果"时自动降级为短 crossfade）
 
 enum DDMotion {
@@ -290,6 +297,8 @@ struct ContentView: View {
     @State private var infoToastToken = 0
     /// ⌘N「新任务」聚焦添加输入框
     @FocusState private var addFieldFocused: Bool
+    /// v2.5 今日日程：EventKit 只读事件（仅设置开启 calendarEnabled 时显示）
+    @ObservedObject private var calendar = CalendarService.shared
 
     var body: some View {
         ZStack {
@@ -409,6 +418,7 @@ struct ContentView: View {
                 .background(GeometryReader { g in
                     Color.clear.preference(key: HeightKey.self, value: g.size.height)
                 })
+            calendarSection
             focusBarSection
             taskList
             addBarSection
@@ -492,6 +502,88 @@ struct ContentView: View {
         guard let key = store.dayKey(byOffset: offset) else { return "未来" }
         let chars = [1: "日", 2: "一", 3: "二", 4: "三", 5: "四", 6: "五", 7: "六"]
         return "周\(chars[store.weekday(ofDayKey: key)] ?? "?")"
+    }
+
+    // MARK: - 今日日程（v2.5：EventKit 只读，周条与任务列表之间的分隔区）
+
+    private static let calendarMaxVisibleRows = 6
+
+    @ViewBuilder
+    private var calendarSection: some View {
+        if store.settings.calendarEnabled {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 5) {
+                    Text("📅 今日日程")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.secondary)
+                    Text("\(calendar.events.count) 项")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundColor(.secondary.opacity(0.7))
+                    Spacer(minLength: 0)
+                }
+                if calendar.authorizationDenied {
+                    calendarDeniedRow
+                } else if calendar.events.isEmpty {
+                    Text("今天没有日历安排")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary.opacity(0.55))
+                } else {
+                    ForEach(calendar.events.prefix(Self.calendarMaxVisibleRows)) { event in
+                        calendarEventRow(event)
+                    }
+                    if calendar.events.count > Self.calendarMaxVisibleRows {
+                        Text("等 \(calendar.events.count) 项")
+                            .font(.system(size: 9.5, weight: .medium))
+                            .foregroundColor(.secondary.opacity(0.6))
+                    }
+                }
+            }
+            .padding(.horizontal, 18)
+            .padding(.bottom, 8)
+            .transition(.opacity)
+            .background(GeometryReader { g in
+                Color.clear.preference(key: HeightKey.self, value: g.size.height)
+            })
+        }
+    }
+
+    /// 授权被拒：提示行 + 去系统设置开启
+    private var calendarDeniedRow: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "calendar.badge.exclamationmark")
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundColor(.orange)
+            Text("未获得日历访问权限")
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+            Spacer(minLength: 0)
+            Button(action: openCalendarPrivacySettings) {
+                Text("打开系统设置")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundColor(Accent.start)
+            }
+            .buttonStyle(.plain)
+            .hoverPointing()
+            .help("在「系统设置 → 隐私与安全性 → 日历」中允许 DeskDaily 读取日程")
+        }
+    }
+
+    /// 紧凑单行：时间（HH:mm-HH:mm / 全天）+ 标题
+    private func calendarEventRow(_ event: CalendarEvent) -> some View {
+        HStack(spacing: 6) {
+            Text(CalendarService.timeRangeText(for: event, tz: store.tz))
+                .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundColor(.secondary.opacity(0.85))
+                .frame(width: 72, alignment: .leading)
+            Text(event.title)
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+        .help(event.isAllDay ? "全天日程" : "日程 \(CalendarService.timeRangeText(for: event, tz: store.tz))")
     }
 
     // MARK: - 迷你折叠胶囊（双击标题区折叠 / 双击胶囊展开）
@@ -2030,11 +2122,14 @@ struct SettingsView: View {
 
     enum SettingsTab: String, CaseIterable, Hashable {
         case general = "通用"
+        case calendar = "日历"
         case ai = "AI"
         case data = "数据"
     }
 
     @State private var tab: SettingsTab = .general
+    /// v2.5：日历授权状态（被拒时设置页提示去开启）
+    @ObservedObject private var calendar = CalendarService.shared
 
     /// 设置内容整体可滚动，且高度不超过屏幕，杜绝“底部看不见”
     private var maxScrollHeight: CGFloat {
@@ -2073,6 +2168,8 @@ struct SettingsView: View {
                         progressGroup
                         reminderGroup
                         entryGroup
+                    case .calendar:
+                        calendarGroup
                     case .ai:
                         aiGroup
                         memoryGroup
@@ -2268,6 +2365,52 @@ struct SettingsView: View {
             }
         } label: {
             Label("入口与启动", systemImage: "slider.horizontal.3")
+        }
+    }
+
+    // MARK: 日历页分组（v2.5：只读集成开关与隐私说明）
+
+    private var calendarGroup: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle(isOn: $store.settings.calendarEnabled) {
+                    Label("读取今日日历（只读）", systemImage: "calendar")
+                }
+                .onChange(of: store.settings.calendarEnabled) { on in
+                    // 开关打开时立即请求授权并读取；关闭时清空内存缓存（不写 data.json）
+                    if on {
+                        CalendarService.shared.refreshIfNeeded(settings: store.settings)
+                    } else {
+                        CalendarService.shared.clearEvents()
+                    }
+                }
+                Text("开启后卡片会在周条下方显示「今日日程」，AI 规划时自动避开会议时段。只读：DeskDaily 绝不写入你的日历；事件数据仅保存在内存，不会写入 data.json。")
+                    .font(.system(size: 9.5))
+                    .foregroundColor(.secondary)
+                if store.settings.calendarEnabled {
+                    Text("使用 AI 规划时，日历忙闲会随上下文发送给你配置的 AI 服务。")
+                        .font(.system(size: 9.5))
+                        .foregroundColor(.secondary)
+                }
+                if calendar.authorizationDenied {
+                    HStack(spacing: 6) {
+                        Label("系统已拒绝日历访问", systemImage: "exclamationmark.triangle.fill")
+                            .font(.system(size: 10.5))
+                            .foregroundColor(.orange)
+                        Spacer(minLength: 0)
+                        Button(action: openCalendarPrivacySettings) {
+                            Text("打开系统设置")
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundColor(Accent.start)
+                        }
+                        .buttonStyle(.plain)
+                        .hoverPointing()
+                        .help("在「系统设置 → 隐私与安全性 → 日历」中允许 DeskDaily 读取日程")
+                    }
+                }
+            }
+        } label: {
+            Label("日历", systemImage: "calendar.badge.clock")
         }
     }
 
@@ -3101,7 +3244,7 @@ struct ChatView: View {
         let memoryText = store.settings.memoryEnabled
             ? store.memories.map { "· \($0.content)" }.joined(separator: "\n")
             : ""
-        return """
+        var prompt = """
         你是 DeskDaily 桌面清单的 AI 规划助手，帮用户规划今天（\(header.date) \(header.weekday)，现在 \(store.clockString())）的安排。
         对话规则：先简要了解用户今天的目标与空闲时段（总共不超过 3 个问题，每轮最多 2 个），语气简洁友好，不要长篇大论。
         信息足够后，用自然语言给出按时间排序的今日安排建议（每行一条，写清建议时间和大概时长），然后询问用户是否确认这份安排。
@@ -3110,6 +3253,14 @@ struct ChatView: View {
         \(memoryText.isEmpty ? "（暂无）" : memoryText)
         用户当前的清单（每轮对话都同步最新状态，✓ 表示已完成）：\(existing.isEmpty ? "（暂无）" : existing)
         """
+        // v2.5：日历忙闲注入（仅用户开启日历且当天有事件时），让 AI 自动避开会议时段
+        if store.settings.calendarEnabled {
+            let busy = CalendarService.aiBusyText(events: CalendarService.shared.events, tz: store.tz)
+            if !busy.isEmpty {
+                prompt += "\n用户今天已有的日历安排（规划时避开这些时段）：\n\(busy)"
+            }
+        }
+        return prompt
     }
 }
 

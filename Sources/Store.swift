@@ -115,12 +115,14 @@ struct AppSettings: Codable, Equatable {
     var dockBadge: Bool = true
     // 首次启动引导：完成后才请求通知权限
     var onboardingDone: Bool = false
+    // v2.5 日历版：读取今日日历（只读）。默认关闭（隐私优先），用户在设置里手动开启
+    var calendarEnabled: Bool = false
 
     private enum CodingKeys: String, CodingKey {
         case tzMode, windowMode, progressMode, soundOn, notifOn, windowFrame
         case aiBaseURL, aiModel, apiKey, memoryEnabled, migratedFloating, reviewTime
         case globalHotkey, statusBarIcon, collapsed, idleFade, idleFadeSeconds, dockBadge
-        case onboardingDone
+        case onboardingDone, calendarEnabled
     }
 
     init() {}
@@ -147,6 +149,7 @@ struct AppSettings: Codable, Equatable {
         idleFadeSeconds = try c.decodeIfPresent(Int.self, forKey: .idleFadeSeconds) ?? 90
         dockBadge = try c.decodeIfPresent(Bool.self, forKey: .dockBadge) ?? true
         onboardingDone = try c.decodeIfPresent(Bool.self, forKey: .onboardingDone) ?? false
+        calendarEnabled = try c.decodeIfPresent(Bool.self, forKey: .calendarEnabled) ?? false
     }
     // API Key 仅为兼容旧文件读取；编码时永不写入普通 JSON。
     func encode(to encoder: Encoder) throws {
@@ -168,6 +171,7 @@ struct AppSettings: Codable, Equatable {
         try c.encode(idleFade, forKey: .idleFade)
         try c.encode(idleFadeSeconds, forKey: .idleFadeSeconds)
         try c.encode(dockBadge, forKey: .dockBadge)
+        try c.encode(calendarEnabled, forKey: .calendarEnabled)
     }
 }
 
@@ -781,6 +785,8 @@ final class Store: ObservableObject {
         let d = dayKey()
         if d != currentDay {
             currentDay = d
+            // v2.5：跨天刷新今日日历事件（仅 calendarEnabled 时生效）
+            CalendarService.shared.refreshIfNeeded(settings: settings)
             if settings.notifOn {
                 Notify.post(title: "🌅 新的一天", body: "「\(activeSheetName)」清单已刷新，今天共有 \(visibleTasks.count) 项任务")
             }
@@ -1119,7 +1125,18 @@ final class Store: ObservableObject {
                 if firstTitle == nil { firstTitle = other.title }
             }
         }
-        guard let title = firstTitle else { return }
+        guard let title = firstTitle else {
+            // v2.5：任务之间不冲突时，再查今日日历事件（只读比对；仅提示，不阻塞创建）。
+            // 复用 deskDailyTimeConflict 机制，userInfo 传事件名，接收端拼「与「X」时间重叠」。
+            if settings.calendarEnabled,
+               let event = CalendarService.overlappingEvent(startMinutes: start, duration: duration,
+                                                            dayKey: currentDay, tz: tz,
+                                                            events: CalendarService.shared.events) {
+                NotificationCenter.default.post(name: .deskDailyTimeConflict, object: nil,
+                                                userInfo: ["title": event.title])
+            }
+            return
+        }
         conflictClearToken += 1
         let token = conflictClearToken
         timeConflictIDs = ids
