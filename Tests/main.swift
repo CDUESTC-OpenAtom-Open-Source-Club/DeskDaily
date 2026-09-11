@@ -68,6 +68,17 @@ check("weekly weekday 越界被拒", (try? AppDataValidator.validate(makeData {
 check("once 非法日期被拒", (try? AppDataValidator.validate(makeData {
     $0.sheets[0].tasks[0].repeatRule = RepeatRule.once(date: "2026/09/02")
 })) == nil)
+check("dueDate 非法日期被拒", (try? AppDataValidator.validate(makeData {
+    $0.sheets[0].tasks[0].dueDate = "2026-02-30"
+})) == nil)
+check("skippedDays 非法日期被拒", (try? AppDataValidator.validate(makeData {
+    $0.sheets[0].tasks[0].skippedDays = ["2026/09/02"]
+})) == nil)
+check("旧 JSON 缺少新字段仍可解码", {
+    let json = #"{"title":"旧任务","repeatRule":{"kind":0,"weekdays":[],"date":""},"createdOn":"2026-09-01","doneDays":["2026-09-02"]}"#.data(using: .utf8)!
+    let task = try? JSONDecoder().decode(TaskItem.self, from: json)
+    return task?.title == "旧任务" && task?.doneDays.contains("2026-09-02") == true
+}())
 check("失效 activeSheetId 被归一化", {
     let bad = makeData { $0.activeSheetId = UUID() }
     let fixed = try? AppDataValidator.validate(bad)
@@ -116,6 +127,27 @@ check("周三完成=2", countsWed.done == 2)
 // 2026-09-05 是周六（weekday=7）：每日活跃，工作日不活跃
 let countsSat = StatsCore.dayCounts(sheets: [sheetA], dayKey: "2026-09-05", weekday: 7)
 check("周六总数=1（仅每日）", countsSat.total == 1)
+check("daily 截止日当天仍活跃", {
+    let task = TaskItem(title: "每日截止", repeatRule: RepeatRule(), createdOn: "2026-09-01", dueDate: "2026-09-05")
+    return StatsCore.wasActive(task, onDay: "2026-09-05", weekday: 7)
+}())
+check("截止日次日不活跃", {
+    let task = TaskItem(title: "每日截止", repeatRule: RepeatRule(), createdOn: "2026-09-01", dueDate: "2026-09-05")
+    return !StatsCore.wasActive(task, onDay: "2026-09-06", weekday: 1)
+}())
+check("weekly 跳过指定日", {
+    let task = TaskItem(title: "工作日跳过", repeatRule: RepeatRule.weekly([4]), createdOn: "2026-09-01", skippedDays: ["2026-09-02"])
+    return !StatsCore.wasActive(task, onDay: "2026-09-02", weekday: 4)
+}())
+check("weekly 跳过指定日", {
+    let task = TaskItem(title: "工作日跳过", repeatRule: RepeatRule.weekly([4]), createdOn: "2026-09-01", skippedDays: ["2026-09-02"])
+    return !StatsCore.wasActive(task, onDay: "2026-09-02", weekday: 4)
+}())
+check("skip/unskip 数据状态", {
+    var task = TaskItem(title: "跳过恢复", repeatRule: RepeatRule(), skippedDays: ["2026-09-02"])
+    task.skippedDays.remove("2026-09-02")
+    return !task.skippedDays.contains("2026-09-02") && task.doneDays.isEmpty
+}())
 // createdOn 晚于统计日 → 不计入（历史公平性口径）
 let lateSheet = PlanSheet(name: "B", colorHex: "8B5CF6", tasks: [
     TaskItem(title: "后建任务", repeatRule: RepeatRule(), createdOn: "2026-09-10", doneDays: ["2026-09-01"])

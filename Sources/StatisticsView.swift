@@ -88,18 +88,19 @@ extension Store {
     /// 不活跃的日期跳过（不算断档），遇到"活跃但未完成"即停；once 任务 0/1 简单处理
     func streak(of task: TaskItem) -> Int {
         if task.repeatRule.kind == .once {
-            return task.doneDays.contains(task.repeatRule.date) ? 1 : 0
+            let key = task.repeatRule.date
+            return task.isActive(on: key, weekday: weekday(ofDayKey: key)) && task.doneDays.contains(key) ? 1 : 0
         }
         var count = 0
         var key = currentDay
-        if task.doneDays.contains(key) { count = 1 }
+        if task.isActive(on: key, weekday: weekday(ofDayKey: key)), task.doneDays.contains(key) { count = 1 }
         var steps = 0
         while steps < 800 {   // 防御上限，正常首个断档就会停
             steps += 1
             guard let prev = dayKey(byAddingDays: -1, toKey: key) else { break }
             key = prev
             if !task.createdOn.isEmpty, key < task.createdOn { break }
-            guard task.repeatRule.isActive(on: key, weekday: weekday(ofDayKey: key)) else { continue }
+            guard task.isActive(on: key, weekday: weekday(ofDayKey: key)) else { continue }
             if task.doneDays.contains(key) {
                 count += 1
             } else {
@@ -112,7 +113,8 @@ extension Store {
     /// 历史最佳连续完成天数（从首个完成日/创建日起逐日扫描）
     func bestStreak(of task: TaskItem) -> Int {
         if task.repeatRule.kind == .once {
-            return task.doneDays.contains(task.repeatRule.date) ? 1 : 0
+            let key = task.repeatRule.date
+            return task.isActive(on: key, weekday: weekday(ofDayKey: key)) && task.doneDays.contains(key) ? 1 : 0
         }
         guard let firstDone = task.doneDays.sorted().first else { return 0 }
         var key = !task.createdOn.isEmpty && task.createdOn < firstDone ? task.createdOn : firstDone
@@ -121,7 +123,7 @@ extension Store {
         var steps = 0
         while key <= currentDay, steps < 4000 {
             steps += 1
-            if task.repeatRule.isActive(on: key, weekday: weekday(ofDayKey: key)) {
+            if task.isActive(on: key, weekday: weekday(ofDayKey: key)) {
                 if task.doneDays.contains(key) {
                     run += 1
                     if run > best { best = run }

@@ -76,7 +76,7 @@ enum OccurrenceKit {
     static func upcomingDays(for task: TaskItem, fromKey key: String, count: Int, tz: TimeZone) -> [String] {
         enumerateDays(fromKey: key, count: count, tz: tz).filter { day in
             guard let weekday = weekday(ofDayKey: day, tz: tz) else { return false }
-            return task.repeatRule.isActive(on: day, weekday: weekday)
+            return task.isActive(on: day, weekday: weekday)
         }
     }
 

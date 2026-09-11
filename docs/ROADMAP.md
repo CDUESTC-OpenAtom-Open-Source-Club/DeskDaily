@@ -23,8 +23,8 @@
 - [x] occurrence 日期计算工具（OccurrenceKit：dayKey 偏移、跨日结束 endInfo/fireDate、未来日期枚举、upcomingDays，全部带测试）
 - [x] 解锁跨午夜时段：`TaskItem.validate` 放开跨日（时长 ≤600 保证最多溢出次日）；结束提醒按 occurrence 起始日去重（`endRemindedDays` 键=起始日，与旧数据同键兼容）；系统日历通知经 `OccurrenceKit.fireDate` 落到次日正确时刻；任务行显示 `23:00-00:30 次日`，午夜后仍为绿色进行中、越过次日结束才转过期。已用真实时钟平移验证（昨天 23:00+90 → 今天 00:34 触发）
 - [x] 未来 7 天视图：「今天 | 明天」双档升级为通栏周条（今/明/一…六 七格，有任务的日期带圆点提示），可查看并直接添加未来任意一天；未来视角自动把新任务设为「仅该日」，头部徽标（明天/后天/周X）与空状态文案同步泛化
-- [ ] 跳过单次 occurrence 与任务截止日期
-- [ ] 通知调度适配 occurrence 模型（identifier 携带目标日期）
+- [x] 跳过单次 occurrence 与任务截止日期：TaskItem 新增 `skippedDays`/`dueDate`（decodeIfPresent 兼容旧数据）；`isActive` 统一展示/提醒/统计/调度口径（截止日当天仍显示、跳过日不计进度分母）；右键「跳过这次/恢复这次/设置截止日期…」（未来视角按选中日）；跳过的行淡化显示「已跳过」角标、可随时恢复；Dock 徽标与全部完成庆祝同步排除跳过项；新增 8 项测试（共 56 项）
+- [x] 通知调度适配 occurrence 模型：identifier 携带目标日期（`dd.schedule.<sheet>.<task>.<dayKey>.<phase>`），调度过滤统一走 `isActive`（跳过/截止后不再排通知），跨午夜结束经 `OccurrenceKit.fireDate` 落到次日正确时刻
 
 ## v2.5 日历版 —— AI 知道你几点有会
 

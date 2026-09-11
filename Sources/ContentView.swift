@@ -726,8 +726,9 @@ struct ContentView: View {
 
     private var headerSection: some View {
         let header = store.dateHeader(offset: viewOffset)
-        let done = viewOffset == 0 ? store.doneCount : 0
-        let total = store.visibleTasks(offset: viewOffset).count
+        let progress = store.progressTasks(offset: viewOffset)
+        let done = viewOffset == 0 ? progress.filter { store.isDone($0) }.count : 0
+        let total = progress.count
         return HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 5) {
@@ -837,11 +838,11 @@ struct ContentView: View {
 
     // MARK: - 任务列表（未完成在上；“现在”线插在定时未完成序列中；已完成折叠在底部）
 
-    /// 今日任务是否全部完成（total > 0 且 done == total；庆祝仅限今天视角）
+    /// 今日任务是否全部完成（跳过的不计入；total > 0 且 done == total；庆祝仅限今天视角）
     private var allDoneToday: Bool {
         guard viewOffset == 0 else { return false }
-        let total = store.visibleTasks.count
-        return total > 0 && store.doneCount == total
+        let progress = store.progressTasks()
+        return !progress.isEmpty && progress.allSatisfy { store.isDone($0) }
     }
 
     /// 全部完成庆祝：记录时刻 + 进度环脉冲 + 粒子喷发 + 轻提示音
@@ -943,10 +944,14 @@ struct ContentView: View {
     }
 
     private func taskRow(_ task: TaskItem) -> some View {
-        TaskRow(task: task,
+        let occurrenceDay = viewOffset == 0
+            ? store.currentDay
+            : (store.dayKey(byOffset: viewOffset) ?? store.currentDay)
+        return TaskRow(task: task,
+                occurrenceDay: occurrenceDay,
                 done: store.isDone(task, offset: viewOffset),
                 nowMinutes: store.nowMinutes,
-                tomorrowMode: viewOffset == 1,
+                tomorrowMode: viewOffset > 0,
                 onBlockedToggle: { showInfoToast("未来的事未来再说 😄 未来视角仅作规划") })
             .transition(DDMotion.taskRowTransition)
     }
@@ -1368,6 +1373,7 @@ struct CelebrationBurst: View {
 
 struct TaskRow: View {
     let task: TaskItem
+    let occurrenceDay: String
     let done: Bool
     let nowMinutes: Int
     /// 明天视角：不允许勾选（点勾给提示）、隐藏“现在/过期/进行中”态与 streak
@@ -1418,13 +1424,17 @@ struct TaskRow: View {
         return "\(store.timeString(s))-\(store.timeString(e % 1440))\(spill)"
     }
 
+    private var isSkippedOccurrence: Bool {
+        task.skippedDays.contains(occurrenceDay)
+    }
+
     var body: some View {
         HStack(spacing: 10) {
             Button {
                 if tomorrowMode {
                     // 勾选仅限今天视角
                     onBlockedToggle?()
-                } else {
+                } else if !isSkippedOccurrence {
                     withDDAnimation {
                         store.toggleDone(task.id)
                     }
@@ -1448,7 +1458,10 @@ struct TaskRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(done ? "点击取消完成" : "点击标记完成")
+            .disabled(isSkippedOccurrence)
+            .help(isSkippedOccurrence
+                  ? "已跳过本次（右键「恢复这次」可撤回）"
+                  : (done ? "点击取消完成" : "点击标记完成"))
 
             if isEditing {
                 TextField("任务标题", text: $editBuffer)
@@ -1468,6 +1481,22 @@ struct TaskRow: View {
                     .foregroundColor(.yellow)
                     .help("重要任务（右键「取消星标」可移除）")
                     .transition(.scale(scale: 0.5).combined(with: .opacity))
+            }
+            if task.skippedDays.contains(occurrenceDay) && !isEditing {
+                Text("已跳过")
+                    .font(.system(size: 9, weight: .semibold))
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.orange.opacity(0.16)))
+                    .foregroundColor(.orange)
+            }
+            if let due = task.dueDate, !isEditing {
+                Text("截止 \(store.shortDayLabel(due))")
+                    .font(.system(size: 9, weight: .semibold))
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.red.opacity(0.13)))
+                    .foregroundColor(.red)
             }
             if task.remindAt != nil, !isEditing {
                 timeChip
@@ -1529,6 +1558,7 @@ struct TaskRow: View {
                 .font(.system(size: 13.5, weight: done ? .regular : .medium))
                 .strikethrough(done, color: .secondary)
                 .foregroundColor(done ? .secondary : .primary)
+                .opacity(isSkippedOccurrence ? 0.45 : 1)
                 .lineLimit(2)
             if streakDays >= 2 {
                 HStack(spacing: 2) {
@@ -1610,13 +1640,40 @@ struct TaskRow: View {
             .help("番茄钟：任务时长 \(store.focusMinutes(for: task)) 分钟（时长超过 60 分钟按 25 分钟计）")
             Divider()
         }
-        Button { activateApp(); showTimePicker = true } label: {
-            Label(task.remindAt == nil ? "设置提醒时间…" : "修改提醒时间…", systemImage: "clock")
-        }
-        if task.remindAt != nil {
-            Button { store.setRemind(task.id, minutes: nil) } label: {
-                Label("清除提醒时间", systemImage: "clock.slash")
+        if task.skippedDays.contains(occurrenceDay) {
+            Button {
+                withDDAnimation { _ = store.unskipOccurrence(taskID: task.id, dayKey: occurrenceDay) }
+            } label: {
+                Label("恢复\(tomorrowMode ? "该日" : "今天")这次", systemImage: "arrow.uturn.backward.circle")
             }
+        } else {
+            Button {
+                withDDAnimation { _ = store.skipOccurrence(taskID: task.id, dayKey: occurrenceDay) }
+            } label: {
+                Label("跳过\(tomorrowMode ? "该日" : "今天")这次", systemImage: "forward.end")
+            }
+        }
+        Menu {
+            Button { activateApp(); showTimePicker = true } label: {
+                Label(task.remindAt == nil ? "设置提醒时间…" : "修改提醒时间…", systemImage: "clock")
+            }
+            if task.remindAt != nil {
+                Button { store.setRemind(task.id, minutes: nil) } label: {
+                    Label("清除提醒时间", systemImage: "clock.slash")
+                }
+            }
+        } label: {
+            Label("提醒时间", systemImage: "clock")
+        }
+        Menu {
+            Button("无截止") { _ = store.setDueDate(task.id, dayKey: nil) }
+            ForEach(0..<7, id: \.self) { offset in
+                if let key = store.dayKey(byOffset: offset) {
+                    Button(store.monthDayLabel(key)) { _ = store.setDueDate(task.id, dayKey: key) }
+                }
+            }
+        } label: {
+            Label(task.dueDate.map { "截止 \(store.monthDayLabel($0))" } ?? "设置截止日期…", systemImage: "calendar.badge.clock")
         }
         Button { startEditing() } label: { Label("修改标题", systemImage: "pencil") }
         Menu {

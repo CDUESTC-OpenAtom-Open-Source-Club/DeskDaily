@@ -182,11 +182,13 @@ struct TaskItem: Codable, Identifiable, Equatable {
     var remindedDays: Set<String> = []     // 已提醒过“开始”的日期
     var endRemindedDays: Set<String> = []  // 已提醒过“结束”的日期
     var starred: Bool = false              // 优先级星标（置顶显示）
+    var dueDate: String? = nil             // 截止日期（yyyy-MM-dd，nil = 无截止日期）
+    var skippedDays: Set<String> = []      // 被跳过的 occurrence 起始日
 
     init(id: UUID = UUID(), title: String, remindAt: Int? = nil, durationMinutes: Int? = nil,
          repeatRule: RepeatRule = RepeatRule(), createdOn: String = "",
          doneDays: Set<String> = [], remindedDays: Set<String> = [], endRemindedDays: Set<String> = [],
-         starred: Bool = false) {
+         starred: Bool = false, dueDate: String? = nil, skippedDays: Set<String> = []) {
         self.id = id
         self.title = title
         self.remindAt = remindAt
@@ -197,6 +199,8 @@ struct TaskItem: Codable, Identifiable, Equatable {
         self.remindedDays = remindedDays
         self.endRemindedDays = endRemindedDays
         self.starred = starred
+        self.dueDate = dueDate
+        self.skippedDays = skippedDays
     }
 
     private enum LegacyKeys: String, CodingKey { case repeatDaily }
@@ -221,6 +225,15 @@ struct TaskItem: Codable, Identifiable, Equatable {
         durationMinutes = try c.decodeIfPresent(Int.self, forKey: .durationMinutes)
         endRemindedDays = try c.decodeIfPresent(Set<String>.self, forKey: .endRemindedDays) ?? []
         starred = try c.decodeIfPresent(Bool.self, forKey: .starred) ?? false
+        dueDate = try c.decodeIfPresent(String.self, forKey: .dueDate)
+        skippedDays = try c.decodeIfPresent(Set<String>.self, forKey: .skippedDays) ?? []
+    }
+
+    /// 某 occurrence 是否应展示、提醒或计入统计。判断均以 occurrence 起始日为准。
+    func isActive(on dayKey: String, weekday: Int) -> Bool {
+        repeatRule.isActive(on: dayKey, weekday: weekday)
+            && (dueDate == nil || dayKey <= dueDate!)
+            && !skippedDays.contains(dayKey)
     }
 }
 
@@ -394,7 +407,7 @@ enum Notify {
                         guard let day = calendar.date(byAdding: .day, value: offset, to: baseDate) else { continue }
                         let dayKey = Store.dayKey(tz: tz, date: day)
                         let weekday = calendar.component(.weekday, from: day)
-                        guard task.repeatRule.isActive(on: dayKey, weekday: weekday),
+                        guard task.isActive(on: dayKey, weekday: weekday),
                               !task.doneDays.contains(dayKey) else { continue }
                         if task.repeatRule.kind == .once && task.repeatRule.date != dayKey { continue }
                         addScheduled(center: center, task: task, sheetID: sheet.id, dayKey: dayKey,
@@ -653,6 +666,8 @@ final class Store: ObservableObject {
             copy.tasks[i].doneDays = []
             copy.tasks[i].remindedDays = []
             copy.tasks[i].endRemindedDays = []
+            copy.tasks[i].dueDate = nil
+            copy.tasks[i].skippedDays = []
             copy.tasks[i].createdOn = ""
             // 模板与具体日期无关：仅今天 → 每天
             if copy.tasks[i].repeatRule.kind == .once {
@@ -673,6 +688,8 @@ final class Store: ObservableObject {
             copy.tasks[i].doneDays = []
             copy.tasks[i].remindedDays = []
             copy.tasks[i].endRemindedDays = []
+            copy.tasks[i].dueDate = nil
+            copy.tasks[i].skippedDays = []
             copy.tasks[i].createdOn = currentDay
         }
         sheets.append(copy)
@@ -786,13 +803,17 @@ final class Store: ObservableObject {
         return dayKey(byAddingDays: offset, toKey: currentDay)
     }
 
-    var visibleTasks: [TaskItem] {
-        guard let i = activeIndex else { return [] }
-        let weekday = weekdayNow()
-        return sheets[i].tasks
-            .filter { $0.repeatRule.isActive(on: currentDay, weekday: weekday) }
+    private func sortedVisibleTasks(_ tasks: [TaskItem], dayKey: String) -> [TaskItem] {
+        let weekday = weekday(ofDayKey: dayKey)
+        return tasks
+            .filter { task in
+                // 展示口径：跳过的 occurrence 仍显示（淡化 + 「已跳过」角标，可右键恢复），
+                // 但不计入进度/提醒/统计（那些走 isActive）
+                task.repeatRule.isActive(on: dayKey, weekday: weekday)
+                    && (task.dueDate == nil || dayKey <= task.dueDate!)
+            }
             .sorted { a, b in
-                if a.starred != b.starred { return a.starred }   // 星标置顶（先于时间规则）
+                if a.starred != b.starred { return a.starred }
                 let am = a.remindAt ?? Int.max
                 let bm = b.remindAt ?? Int.max
                 if am != bm { return am < bm }
@@ -800,20 +821,22 @@ final class Store: ObservableObject {
             }
     }
 
+    var visibleTasks: [TaskItem] {
+        guard let i = activeIndex else { return [] }
+        return sortedVisibleTasks(sheets[i].tasks, dayKey: currentDay)
+    }
+
     /// 周视图：offset 0=今天，1…6=未来 N 天（重复规则命中该日，或 once.date = 该日）
     func visibleTasks(offset: Int) -> [TaskItem] {
         guard offset > 0 else { return visibleTasks }
         guard let i = activeIndex, let key = dayKey(byOffset: offset) else { return [] }
-        let weekday = weekday(ofDayKey: key)
-        return sheets[i].tasks
-            .filter { $0.repeatRule.isActive(on: key, weekday: weekday) }
-            .sorted { a, b in
-                if a.starred != b.starred { return a.starred }   // 星标置顶（先于时间规则）
-                let am = a.remindAt ?? Int.max
-                let bm = b.remindAt ?? Int.max
-                if am != bm { return am < bm }
-                return a.title.localizedStandardCompare(b.title) == .orderedAscending
-            }
+        return sortedVisibleTasks(sheets[i].tasks, dayKey: key)
+    }
+
+    /// 进度口径：排除目标日已跳过的 occurrence（跳过不算任务量）
+    func progressTasks(offset: Int = 0) -> [TaskItem] {
+        let day = dayKey(byOffset: offset) ?? currentDay
+        return visibleTasks(offset: offset).filter { !$0.skippedDays.contains(day) }
     }
 
     var doneCount: Int { visibleTasks.filter { isDone($0) }.count }
@@ -1015,6 +1038,43 @@ final class Store: ObservableObject {
         }
     }
 
+    /// 跳过一个 occurrence，只记录起始日，不改动历史完成记录。
+    @discardableResult
+    func skipOccurrence(taskID: UUID, dayKey: String) -> Bool {
+        guard isValidDayKey(dayKey), let i = activeIndex,
+              let j = sheets[i].tasks.firstIndex(where: { $0.id == taskID }) else { return false }
+        sheets[i].tasks[j].skippedDays.insert(dayKey)
+        return true
+    }
+
+    @discardableResult
+    func unskipOccurrence(taskID: UUID, dayKey: String) -> Bool {
+        guard isValidDayKey(dayKey), let i = activeIndex,
+              let j = sheets[i].tasks.firstIndex(where: { $0.id == taskID }) else { return false }
+        sheets[i].tasks[j].skippedDays.remove(dayKey)
+        return true
+    }
+
+    @discardableResult
+    func setDueDate(_ taskID: UUID, dayKey: String?) -> Bool {
+        guard let i = activeIndex,
+              let j = sheets[i].tasks.firstIndex(where: { $0.id == taskID }) else { return false }
+        if let dayKey, !isValidDayKey(dayKey) { return false }
+        sheets[i].tasks[j].dueDate = dayKey
+        return true
+    }
+
+    func isValidDayKey(_ key: String) -> Bool {
+        guard key.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil else { return false }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.isLenient = false
+        return formatter.date(from: key) != nil
+    }
+
     func toggleDone(_ id: UUID) {
         mutateActiveTasks { list in
             guard let i = list.firstIndex(where: { $0.id == id }) else { return }
@@ -1052,7 +1112,7 @@ final class Store: ObservableObject {
         for other in sheets[i].tasks {
             guard other.id != excludedID,
                   let otherStart = other.remindAt,
-                  other.repeatRule.isActive(on: currentDay, weekday: weekday) else { continue }
+                  other.isActive(on: currentDay, weekday: weekday) else { continue }
             let otherEnd = otherStart + ((other.durationMinutes ?? 0) > 0 ? other.durationMinutes! : 30)
             if start < otherEnd && otherStart < end {
                 ids.insert(other.id)
@@ -1072,13 +1132,13 @@ final class Store: ObservableObject {
 
     // MARK: Dock 徽标（批次④）
 
-    /// 今日未完成数 > 0 且设置开启时，Dock 图标挂数字角标；否则清空
+    /// 今日未完成数 > 0 且设置开启时，Dock 图标挂数字角标；否则清空（跳过的不算未完成）
     func refreshDockBadge() {
         guard Thread.isMainThread else {
             DispatchQueue.main.async { self.refreshDockBadge() }
             return
         }
-        let undone = visibleTasks.filter { !isDone($0) }.count
+        let undone = visibleTasks.filter { !$0.skippedDays.contains(currentDay) && !isDone($0) }.count
         NSApp.dockTile.badgeLabel = (settings.dockBadge && undone > 0) ? "\(min(undone, 99))" : nil
     }
 
@@ -1207,7 +1267,7 @@ final class Store: ObservableObject {
                 let end = duration.map { start + $0 }  // 可 ≥1440（跨午夜）
 
                 // —— 今天的 occurrence：开始提醒 ——
-                if task.repeatRule.isActive(on: currentDay, weekday: todayWeekday),
+                if task.isActive(on: currentDay, weekday: todayWeekday),
                    !task.doneDays.contains(currentDay) {
                     if nowMinutes >= start, !task.remindedDays.contains(currentDay) {
                         sheets[sheetIndex].tasks[taskIndex].remindedDays.insert(currentDay)
@@ -1218,10 +1278,10 @@ final class Store: ObservableObject {
                 }
 
                 // —— 结束提醒：按 occurrence 起始日去重（同日结束键=当天；跨午夜键=起始日）——
-                if let duration, let end {
+                if let end = end {
                     if end < 1440 {
                         // 当天开始、当天结束
-                        if task.repeatRule.isActive(on: currentDay, weekday: todayWeekday),
+                        if task.isActive(on: currentDay, weekday: todayWeekday),
                            !task.doneDays.contains(currentDay),
                            nowMinutes >= end, !task.endRemindedDays.contains(currentDay) {
                             sheets[sheetIndex].tasks[taskIndex].endRemindedDays.insert(currentDay)
@@ -1232,7 +1292,7 @@ final class Store: ObservableObject {
                     } else if let yesterdayKey {
                         // 昨天开始、跨午夜到今天结束（分钟 = end - 1440）
                         let endToday = end - 1440
-                        guard task.repeatRule.isActive(on: yesterdayKey, weekday: weekday(ofDayKey: yesterdayKey)),
+                        guard task.isActive(on: yesterdayKey, weekday: weekday(ofDayKey: yesterdayKey)),
                               !task.doneDays.contains(yesterdayKey),
                               nowMinutes >= endToday,
                               !task.endRemindedDays.contains(yesterdayKey) else { continue }
@@ -1463,7 +1523,7 @@ final class Store: ObservableObject {
             while steps < days, let prev = dayKey(byAddingDays: -1, toKey: key) {
                 key = prev
                 steps += 1
-                guard task.repeatRule.isActive(on: key, weekday: weekday(ofDayKey: key)) else { continue }
+                guard task.isActive(on: key, weekday: weekday(ofDayKey: key)) else { continue }
                 if rand() < 0.72 {
                     sheets[i].tasks[j].doneDays.insert(key)
                 }

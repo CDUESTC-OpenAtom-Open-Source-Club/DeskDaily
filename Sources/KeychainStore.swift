@@ -120,6 +120,15 @@ struct AppDataValidator {
                 throw DataValidationError.invalidTask(task.id.uuidString, reason: "任务标题不能为空且不能超过 60 个字符")
             }
             try TaskItem.validate(remindAt: task.remindAt, duration: task.durationMinutes)
+            if let dueDate = task.dueDate {
+                guard dueDate.range(of: dayPattern, options: .regularExpression) != nil,
+                      validDay(dueDate) else {
+                    throw DataValidationError.invalidTask(task.id.uuidString, reason: "截止日期必须是有效的 yyyy-MM-dd")
+                }
+            }
+            guard task.skippedDays.allSatisfy({ $0.range(of: dayPattern, options: .regularExpression) != nil && validDay($0) }) else {
+                throw DataValidationError.invalidTask(task.id.uuidString, reason: "跳过日期必须是有效的 yyyy-MM-dd")
+            }
             switch task.repeatRule.kind {
             case .daily: break
             case .weekly:
@@ -183,7 +192,7 @@ extension TaskItem {
 enum StatsCore {
     /// 统计口径的“该天活跃”：重复规则命中，且该天不早于任务创建日
     static func wasActive(_ task: TaskItem, onDay key: String, weekday: Int) -> Bool {
-        guard task.repeatRule.isActive(on: key, weekday: weekday) else { return false }
+        guard task.isActive(on: key, weekday: weekday) else { return false }
         return task.createdOn.isEmpty || task.createdOn <= key
     }
 

@@ -124,6 +124,8 @@ extension Store {
             item.doneDays = []
             item.remindedDays = []
             item.endRemindedDays = []
+            item.dueDate = nil
+            item.skippedDays = []
             return item
         }.sorted { ($0.remindAt ?? Int.max) < ($1.remindAt ?? Int.max) }
     }
