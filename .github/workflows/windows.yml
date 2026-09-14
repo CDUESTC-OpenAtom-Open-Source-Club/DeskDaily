@@ -1,0 +1,41 @@
+name: Build Windows (Tech Preview)
+
+# v4.0 Windows 技术验证：WPF (.NET 8) 最小壳的构建链路
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'windows/**'
+      - '.github/workflows/windows.yml'
+  pull_request:
+    paths:
+      - 'windows/**'
+      - '.github/workflows/windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Build WPF shell
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build
+        run: dotnet build windows/DeskDaily.Windows/DeskDaily.Windows.csproj -c Release
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeskDaily-Windows-tech-preview
+          path: windows/DeskDaily.Windows/bin/Release/net8.0-windows/**
+          if-no-files-found: error
+          retention-days: 14
