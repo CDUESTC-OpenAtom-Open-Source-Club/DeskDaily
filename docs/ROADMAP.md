@@ -58,7 +58,7 @@
 
 ### 任务清单
 
-- [ ] Windows 技术验证：WinUI 3 / WPF / Avalonia 三选一（评估毛玻璃、托盘、Toast、开机自启的实现成本），产出最小可运行壳
+- [x] Windows 技术验证完成：选定 **WPF (.NET 8)**（毛玻璃=DWM/第三方、托盘=NotifyIcon、Toast=CommunityToolkit、自启=注册表，全部有成熟方案；WinUI 3 打包链成本最高、Avalonia 原生体验打折）。最小可运行壳在 `windows/DeskDaily.Windows/`（零第三方依赖），`windows-latest` CI 构建链路已验证通过（windows/README.md 含完整评估表）
 - [ ] 移植核心逻辑：RepeatRule / OccurrenceKit / AppDataValidator / StatsCore → C#，用 `Tests/main.swift` 的用例做回归夹具
 - [ ] 数据互通：Windows 版直接读写 `data.json`（同一 schemaVersion），导入/导出与 Mac 版互相无损验证
 - [ ] 功能对等（第一批）：任务清单、勾选打卡、多计划表、重复规则、时段提醒（Windows Toast + 计划任务）、模板目录
