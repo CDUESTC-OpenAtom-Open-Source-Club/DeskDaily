@@ -59,7 +59,7 @@
 ### 任务清单
 
 - [x] Windows 技术验证完成：选定 **WPF (.NET 8)**（毛玻璃=DWM/第三方、托盘=NotifyIcon、Toast=CommunityToolkit、自启=注册表，全部有成熟方案；WinUI 3 打包链成本最高、Avalonia 原生体验打折）。最小可运行壳在 `windows/DeskDaily.Windows/`（零第三方依赖），`windows-latest` CI 构建链路已验证通过（windows/README.md 含完整评估表）
-- [ ] 移植核心逻辑：RepeatRule / OccurrenceKit / AppDataValidator / StatsCore → C#，用 `Tests/main.swift` 的用例做回归夹具
+- [x] 移植核心逻辑完成：`windows/DeskDaily.Core/`（RepeatRule / OccurrenceKit / TaskItem+AppData 校验 / StatsCore，含 v2.5 的 dueDate/skippedDays 口径），`windows/DeskDaily.Core.Tests/` 以 Tests/main.swift 用例为回归夹具——**47 项断言在 windows-latest CI 上通过**，并与 Mac 版 56 项测试持续同源对照
 - [ ] 数据互通：Windows 版直接读写 `data.json`（同一 schemaVersion），导入/导出与 Mac 版互相无损验证
 - [ ] 功能对等（第一批）：任务清单、勾选打卡、多计划表、重复规则、时段提醒（Windows Toast + 计划任务）、模板目录
 - [ ] 功能对等（第二批）：统计热力图、自然语言快速添加、AI 规划（两阶段确认）、番茄钟
