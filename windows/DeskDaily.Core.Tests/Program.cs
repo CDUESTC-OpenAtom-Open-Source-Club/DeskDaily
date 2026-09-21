@@ -85,12 +85,14 @@ Check("dueDate 非法日期被拒", Reject(() => AppDataValidator.Validate(MakeD
     d.Sheets[0].Tasks[0].DueDate = "2026-02-30"))));
 Check("skippedDays 非法日期被拒", Reject(() => AppDataValidator.Validate(MakeData(d =>
     d.Sheets[0].Tasks[0].SkippedDays.Add("2026/09/02")))));
-Check("失效 activeSheetId 被归一化", () =>
+
+bool ActiveSheetNormalized()
 {
     var bad = MakeData(d => d.ActiveSheetId = Guid.NewGuid());
     var fixedData = AppDataValidator.Validate(bad);
     return fixedData.ActiveSheetId == fixedData.Sheets.First().Id;
-}());
+}
+Check("失效 activeSheetId 被归一化", ActiveSheetNormalized());
 
 // MARK: - OccurrenceKit
 
